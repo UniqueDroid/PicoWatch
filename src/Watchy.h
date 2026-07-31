@@ -103,12 +103,13 @@ public:
   virtual void drawWatchFace(); // override this method for different watch
                                 // faces
 
-  // Advances to the next watchface design and immediately redraws, then
-  // returns to WATCHFACE_STATE - called from the "Change Watchface" menu
-  // item. No-op by default; only meaningful for a Watchy subclass that
-  // actually holds more than one drawWatchFace() implementation (see
-  // MultiFaceWatchy).
-  virtual void cycleWatchface() {}
+  // Lets the user pick a different watchface design, called from the
+  // "Change Watchface" menu item. No-op by default; only meaningful for a
+  // Watchy subclass that actually holds more than one drawWatchFace()
+  // implementation (see MultiFaceWatchy). May return to either
+  // WATCHFACE_STATE (design applied) or MAIN_MENU_STATE (cancelled) -
+  // handleButtonPress() checks guiState afterward rather than assuming.
+  virtual void changeWatchface() {}
 
 private:
   void _bmaConfig();

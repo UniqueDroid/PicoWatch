@@ -202,15 +202,16 @@ void Watchy::handleButtonPress() {
         showSyncNTP();
         break;
       case 6:
-        // Goes straight back to WATCHFACE_STATE (unlike the other menu
-        // actions, which return to MAIN_MENU_STATE) - the fast-menu loop
-        // below only handles MAIN_MENU_STATE/APP_STATE/FW_UPDATE_STATE, so
-        // falling through into it here would leave the watch appearing
-        // frozen (ignoring all button input) for up to 5 seconds. Return
-        // immediately instead, same as the "Back while already on
-        // WATCHFACE_STATE" case below.
-        cycleWatchface();
-        return;
+        changeWatchface();
+        // May end in WATCHFACE_STATE (design applied) instead of the usual
+        // MAIN_MENU_STATE - the fast-menu loop below only handles
+        // MAIN_MENU_STATE/APP_STATE/FW_UPDATE_STATE, so falling through into
+        // it while already on WATCHFACE_STATE would leave the watch
+        // appearing frozen (ignoring all button input) for up to 5 seconds.
+        // Return immediately in that case, same as the "Back while already
+        // on WATCHFACE_STATE" case below.
+        if (guiState == WATCHFACE_STATE) return;
+        break;
       case 7:
         setTimezone();
         break;
@@ -297,7 +298,7 @@ void Watchy::handleButtonPress() {
             showSyncNTP();
             break;
           case 6:
-            cycleWatchface();
+            changeWatchface();
             break;
           case 7:
             setTimezone();
@@ -305,9 +306,10 @@ void Watchy::handleButtonPress() {
           default:
             break;
           }
-          // cycleWatchface() (case 6) goes straight back to WATCHFACE_STATE,
-          // which none of this loop's guiState checks below handle - without
-          // this, the watch would sit ignoring all input for up to 5 more
+          // changeWatchface() (case 6) may go straight back to
+          // WATCHFACE_STATE, which none of this loop's guiState checks below
+          // handle - without this, the watch would sit ignoring all input
+          // for up to 5 more
           // seconds. Mirrors the "Back while in menu" branch's "break; //
           // leave loop" a few lines down.
           if (guiState == WATCHFACE_STATE) break;

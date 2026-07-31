@@ -4,9 +4,10 @@
 #include <Watchy.h>
 
 // Combines all 8 example watchfaces into one firmware. Selecting "Change
-// Watchface" in the main menu (see cycleWatchface()) cycles selectedFace and
-// immediately redraws - no separate picker screen needed. Each face's
-// original drawWatchFace() body was moved here unchanged as its own method
+// Watchface" in the main menu (see changeWatchface()) opens a scrollable
+// list of all 8 designs; confirming applies selectedFace and redraws, Back
+// cancels back to the menu. Each face's original drawWatchFace() body was
+// moved here unchanged as its own method
 // (drawBasic/draw7Seg/drawDos/drawMacPaint/drawMario/drawPokemon/
 // drawStarryHorizon/drawTetris); their bitmap/font assets were copied from
 // the individual examples into per-face namespaces (face7seg, facemacpaint,
@@ -14,8 +15,10 @@
 // reused identical generic names (e.g. both MacPaint and Mario declared
 // "numbers", 7_SEG's icons.h used bare names like "battery"/"wifi").
 class MultiFaceWatchy : public Watchy {
+ public:
   static constexpr int FACE_COUNT = 8;
 
+ private:
   void drawBasic();
   void draw7Seg();
   void drawDos();
@@ -42,7 +45,7 @@ class MultiFaceWatchy : public Watchy {
  public:
   using Watchy::Watchy;
   void drawWatchFace() override;
-  void cycleWatchface() override;
+  void changeWatchface() override;
 };
 
 #endif

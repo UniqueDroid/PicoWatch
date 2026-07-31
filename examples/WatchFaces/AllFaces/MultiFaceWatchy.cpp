@@ -16,12 +16,80 @@
 #include "Px437_IBM_BIOS5pt7b.h"
 #include "Seven_Segment10pt7b.h"
 
+// Watchy.cpp defines this the same way, but only for its own translation
+// unit - AllFaces builds exclusively for V3 (ARDUINO_ESP32S3_DEV), so this
+// always matches.
+#define ACTIVE_LOW 0
+
 // Persists across deep sleep like guiState/menuIndex (declared in Watchy.cpp).
 RTC_DATA_ATTR int selectedFace = 0;
 
-void MultiFaceWatchy::cycleWatchface() {
-  selectedFace = (selectedFace + 1) % FACE_COUNT;
-  showWatchFace(false);
+namespace {
+constexpr const char *kFaceNames[MultiFaceWatchy::FACE_COUNT] = {
+    "Basic", "7 Segment", "DOS", "MacPaint", "Mario", "Pokemon", "Starry Horizon", "Tetris"};
+}  // namespace
+
+void MultiFaceWatchy::changeWatchface() {
+  guiState = APP_STATE;
+
+  int pick = selectedFace;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  // Same button-bounce hazard as Watchy::setTimezone(): Menu here confirms
+  // immediately, and it's the very button that was just pressed to select
+  // "Change Watchface" from the main menu.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  bool confirmed = true;
+  while (1) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      confirmed = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      confirmed = false;
+      break;
+    }
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      pick = (pick + 1) % FACE_COUNT;
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      pick = (pick - 1 + FACE_COUNT) % FACE_COUNT;
+    }
+
+    display.fillScreen(GxEPD_BLACK);
+    display.setFont(&FreeMonoBold9pt7b);
+    for (int i = 0; i < FACE_COUNT; i++) {
+      const int16_t yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
+      display.setCursor(0, yPos);
+      if (i == pick) {
+        int16_t x1, y1;
+        uint16_t w, h;
+        display.getTextBounds(kFaceNames[i], 0, yPos, &x1, &y1, &w, &h);
+        display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+        display.setTextColor(GxEPD_BLACK);
+      } else {
+        display.setTextColor(GxEPD_WHITE);
+      }
+      display.println(kFaceNames[i]);
+    }
+    display.display(true);  // partial refresh
+  }
+
+  if (confirmed) {
+    selectedFace = pick;
+    showWatchFace(false);
+  } else {
+    showMenu(menuIndex, false);
+  }
 }
 
 void MultiFaceWatchy::drawWatchFace() {
