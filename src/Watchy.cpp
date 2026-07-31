@@ -664,6 +664,15 @@ void Watchy::setTimezone() {
   pinMode(MENU_BTN_PIN, INPUT);
   pinMode(BACK_BTN_PIN, INPUT);
 
+  // Unlike Set Time (5 fields, Menu just advances) or the About/Buzz/etc.
+  // screens (exit via Back), Menu here confirms AND exits immediately - so a
+  // still-bouncing/held Menu press (the same one that just selected "Set
+  // Timezone" from the list) would otherwise instantly exit again before the
+  // screen is ever usable. Wait for a clean release first.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
   display.setFullWindow();
 
   bool save = true;
