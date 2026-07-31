@@ -33,6 +33,34 @@ void saveManualGmtOffset(long offsetSec) {
   prefs.putLong(kPrefsOffsetKey, offsetSec);
   prefs.end();
 }
+
+// Step-count history for the last 7 complete days, persisted in flash (NVS)
+// so it survives a reset. history[0] is the most recently completed day,
+// history[6] the oldest. Captured once per real day at 00:00 regardless of
+// which watchface is active (see Watchy::init()'s WATCHFACE_STATE tick
+// handler) - previously this reset only happened to run because 7_SEG's own
+// draw method checked for midnight, so any other active face silently never
+// reset (or recorded) the daily step count at all.
+constexpr const char *kPrefsStepsHistKey = "stepsHist";
+constexpr const char *kPrefsStepsDayKey = "stepsDay";
+constexpr int kStepsHistoryDays = 7;
+
+// Not a real calendar day count, just a cheap monotonically-increasing
+// per-day number good enough to detect "a new day started since we last
+// looked" - exact calendar math isn't needed here.
+long dayNumber(const tmElements_t &t) {
+  return (long)tmYearToCalendar(t.Year) * 372L + (long)t.Month * 31L + (long)t.Day;
+}
+
+void loadStepsHistory(int32_t (&history)[kStepsHistoryDays]) {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  size_t got = prefs.getBytes(kPrefsStepsHistKey, history, sizeof(int32_t) * kStepsHistoryDays);
+  prefs.end();
+  if (got != sizeof(int32_t) * kStepsHistoryDays) {
+    for (int i = 0; i < kStepsHistoryDays; i++) history[i] = 0;
+  }
+}
 }  // namespace
 
 #ifdef ARDUINO_ESP32S3_DEV
@@ -47,6 +75,7 @@ GxEPD2_BW<WatchyDisplay, WatchyDisplay::HEIGHT> Watchy::display(
 
 RTC_DATA_ATTR int guiState;
 RTC_DATA_ATTR int menuIndex;
+RTC_DATA_ATTR int settingsMenuIndex;
 RTC_DATA_ATTR BMA423 sensor;
 RTC_DATA_ATTR bool WIFI_CONFIGURED;
 RTC_DATA_ATTR bool BLE_CONFIGURED;
@@ -87,6 +116,7 @@ void Watchy::init(String datetime) {
           vibMotor(75, 4);
         }
       }
+      _captureStepsAtMidnight();
       break;
     case MAIN_MENU_STATE:
       // Return to watchface if in menu for more than one tick
@@ -171,6 +201,62 @@ void Watchy::deepSleep() {
   esp_deep_sleep_start();
 }
 
+namespace {
+// Top-level menu (case 0-3, MAIN_MENU_STATE) and Settings submenu (case 0-6,
+// SETTINGS_MENU_STATE) selections share this shape across both the
+// single-press switch and its fast-menu-loop duplicate below, so it's
+// factored out once instead of copy-pasted four times.
+void dispatchTopMenu(Watchy *w, int index) {
+  switch (index) {
+  case 0:
+    w->changeWatchface();
+    break;
+  case 1:
+    w->showStopwatch();
+    break;
+  case 2:
+    w->showStepsHistory();
+    break;
+  case 3:
+    w->showSettingsMenu(settingsMenuIndex, false);
+    break;
+  default:
+    break;
+  }
+}
+
+void dispatchSettingsMenu(Watchy *w, int index) {
+  switch (index) {
+  case 0:
+    w->showAbout();
+    break;
+  case 1:
+    w->showBuzz();
+    break;
+  case 2:
+    w->showAccelerometer();
+    break;
+  case 3:
+    w->setTime();
+    break;
+  case 4:
+    w->setupWifi();
+    break;
+  /*case 5:
+    w->showUpdateFW();
+    break;*/
+  case 5:
+    w->showSyncNTP();
+    break;
+  case 6:
+    w->setTimezone();
+    break;
+  default:
+    break;
+  }
+}
+}  // namespace
+
 void Watchy::handleButtonPress() {
   uint64_t wakeupBit = esp_sleep_get_ext1_wakeup_status();
   // Menu Button
@@ -178,47 +264,18 @@ void Watchy::handleButtonPress() {
     if (guiState ==
         WATCHFACE_STATE) { // enter menu state if coming from watch face
       showMenu(menuIndex, false);
-    } else if (guiState ==
-               MAIN_MENU_STATE) { // if already in menu, then select menu item
-      switch (menuIndex) {
-      case 0:
-        showAbout();
-        break;
-      case 1:
-        showBuzz();
-        break;
-      case 2:
-        showAccelerometer();
-        break;
-      case 3:
-        setTime();
-        break;
-      case 4:
-        setupWifi();
-        break;
-      /*case 5:
-        showUpdateFW();
-        break;*/
-      case 5:
-        showSyncNTP();
-        break;
-      case 6:
-        changeWatchface();
-        // May end in WATCHFACE_STATE (design applied) instead of the usual
-        // MAIN_MENU_STATE - the fast-menu loop below only handles
-        // MAIN_MENU_STATE/APP_STATE/FW_UPDATE_STATE, so falling through into
-        // it while already on WATCHFACE_STATE would leave the watch
-        // appearing frozen (ignoring all button input) for up to 5 seconds.
-        // Return immediately in that case, same as the "Back while already
-        // on WATCHFACE_STATE" case below.
-        if (guiState == WATCHFACE_STATE) return;
-        break;
-      case 7:
-        setTimezone();
-        break;
-      default:
-        break;
-      }
+    } else if (guiState == MAIN_MENU_STATE) { // if already in menu, then select menu item
+      dispatchTopMenu(this, menuIndex);
+      // changeWatchface() (case 0) may go straight back to WATCHFACE_STATE
+      // instead of the usual MAIN_MENU_STATE - the fast-menu loop below only
+      // handles MAIN_MENU_STATE/APP_STATE/FW_UPDATE_STATE/
+      // SETTINGS_MENU_STATE, so falling through into it while already on
+      // WATCHFACE_STATE would leave the watch appearing frozen (ignoring all
+      // button input) for up to 5 seconds. Return immediately in that case,
+      // same as the "Back while already on WATCHFACE_STATE" case below.
+      if (guiState == WATCHFACE_STATE) return;
+    } else if (guiState == SETTINGS_MENU_STATE) { // select settings submenu item
+      dispatchSettingsMenu(this, settingsMenuIndex);
     } /*else if (guiState == FW_UPDATE_STATE) {
       updateFWBegin();
     }*/
@@ -228,10 +285,12 @@ void Watchy::handleButtonPress() {
     if (guiState == MAIN_MENU_STATE) { // exit to watch face if already in menu
       RTC.read(currentTime);
       showWatchFace(false);
+    } else if (guiState == SETTINGS_MENU_STATE) { // exit to top menu if already in settings
+      showMenu(menuIndex, false);
     } else if (guiState == APP_STATE) {
-      showMenu(menuIndex, false); // exit to menu if already in app
+      showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in a settings app
     } else if (guiState == FW_UPDATE_STATE) {
-      showMenu(menuIndex, false); // exit to menu if already in app
+      showSettingsMenu(settingsMenuIndex, false);
     } else if (guiState == WATCHFACE_STATE) {
       return;
     }
@@ -244,6 +303,12 @@ void Watchy::handleButtonPress() {
         menuIndex = MENU_LENGTH - 1;
       }
       showMenu(menuIndex, true);
+    } else if (guiState == SETTINGS_MENU_STATE) { // increment settings menu index
+      settingsMenuIndex--;
+      if (settingsMenuIndex < 0) {
+        settingsMenuIndex = SETTINGS_MENU_LENGTH - 1;
+      }
+      showSettingsMenu(settingsMenuIndex, true);
     } else if (guiState == WATCHFACE_STATE) {
       return;
     }
@@ -256,6 +321,12 @@ void Watchy::handleButtonPress() {
         menuIndex = 0;
       }
       showMenu(menuIndex, true);
+    } else if (guiState == SETTINGS_MENU_STATE) { // decrement settings menu index
+      settingsMenuIndex++;
+      if (settingsMenuIndex > SETTINGS_MENU_LENGTH - 1) {
+        settingsMenuIndex = 0;
+      }
+      showSettingsMenu(settingsMenuIndex, true);
     } else if (guiState == WATCHFACE_STATE) {
       return;
     }
@@ -274,47 +345,13 @@ void Watchy::handleButtonPress() {
     } else {
       if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
         lastTimeout = millis();
-        if (guiState ==
-            MAIN_MENU_STATE) { // if already in menu, then select menu item
-          switch (menuIndex) {
-          case 0:
-            showAbout();
-            break;
-          case 1:
-            showBuzz();
-            break;
-          case 2:
-            showAccelerometer();
-            break;
-          case 3:
-            setTime();
-            break;
-          case 4:
-            setupWifi();
-            break;
-          /*case 5:
-            showUpdateFW();
-            break;*/
-          case 5:
-            showSyncNTP();
-            break;
-          case 6:
-            changeWatchface();
-            break;
-          case 7:
-            setTimezone();
-            break;
-          default:
-            break;
-          }
-          // changeWatchface() (case 6) may go straight back to
-          // WATCHFACE_STATE, which none of this loop's guiState checks below
-          // handle - without this, the watch would sit ignoring all input
-          // for up to 5 more
-          // seconds. Mirrors the "Back while in menu" branch's "break; //
-          // leave loop" a few lines down.
+        if (guiState == MAIN_MENU_STATE) { // if already in menu, then select menu item
+          dispatchTopMenu(this, menuIndex);
+          // See the identical comment in the single-press handler above.
           if (guiState == WATCHFACE_STATE) break;
-        }/* else if (guiState == FW_UPDATE_STATE) {
+        } else if (guiState == SETTINGS_MENU_STATE) {
+          dispatchSettingsMenu(this, settingsMenuIndex);
+        } /*else if (guiState == FW_UPDATE_STATE) {
           updateFWBegin();
         }*/
       } else if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
@@ -324,10 +361,12 @@ void Watchy::handleButtonPress() {
           RTC.read(currentTime);
           showWatchFace(false);
           break; // leave loop
+        } else if (guiState == SETTINGS_MENU_STATE) {
+          showMenu(menuIndex, false); // exit to top menu if already in settings
         } else if (guiState == APP_STATE) {
-          showMenu(menuIndex, false); // exit to menu if already in app
+          showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in a settings app
         } else if (guiState == FW_UPDATE_STATE) {
-          showMenu(menuIndex, false); // exit to menu if already in app
+          showSettingsMenu(settingsMenuIndex, false);
         }
       } else if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
         lastTimeout = millis();
@@ -337,6 +376,12 @@ void Watchy::handleButtonPress() {
             menuIndex = MENU_LENGTH - 1;
           }
           showFastMenu(menuIndex);
+        } else if (guiState == SETTINGS_MENU_STATE) {
+          settingsMenuIndex--;
+          if (settingsMenuIndex < 0) {
+            settingsMenuIndex = SETTINGS_MENU_LENGTH - 1;
+          }
+          showFastSettingsMenu(settingsMenuIndex);
         }
       } else if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
         lastTimeout = millis();
@@ -346,6 +391,12 @@ void Watchy::handleButtonPress() {
             menuIndex = 0;
           }
           showFastMenu(menuIndex);
+        } else if (guiState == SETTINGS_MENU_STATE) {
+          settingsMenuIndex++;
+          if (settingsMenuIndex > SETTINGS_MENU_LENGTH - 1) {
+            settingsMenuIndex = 0;
+          }
+          showFastSettingsMenu(settingsMenuIndex);
         }
       }
     }
@@ -361,10 +412,7 @@ void Watchy::showMenu(byte menuIndex, bool partialRefresh) {
   uint16_t w, h;
   int16_t yPos;
 
-  const char *menuItems[] = {
-      "About Watchy", "Vibrate Motor",    "Show Accelerometer",
-      "Set Time",     "Setup WiFi",       /*"Update Firmware",*/
-      "Sync NTP",     "Change Watchface", "Set Timezone"};
+  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Settings"};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -394,10 +442,7 @@ void Watchy::showFastMenu(byte menuIndex) {
   uint16_t w, h;
   int16_t yPos;
 
-  const char *menuItems[] = {
-      "About Watchy", "Vibrate Motor",    "Show Accelerometer",
-      "Set Time",     "Setup WiFi",       /*"Update Firmware",*/
-      "Sync NTP",     "Change Watchface", "Set Timezone"};
+  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Settings"};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -415,6 +460,201 @@ void Watchy::showFastMenu(byte menuIndex) {
   display.display(true);
 
   guiState = MAIN_MENU_STATE;
+}
+
+void Watchy::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setFont(&FreeMonoBold9pt7b);
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  int16_t yPos;
+
+  const char *settingsMenuItems[] = {"About Watchy", "Vibrate Motor", "Show Accelerometer",
+                                      "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
+                                      "Sync NTP",     "Set Timezone"};
+  for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
+    yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
+    display.setCursor(0, yPos);
+    if (i == settingsMenuIndex) {
+      display.getTextBounds(settingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
+      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+      display.setTextColor(GxEPD_BLACK);
+      display.println(settingsMenuItems[i]);
+    } else {
+      display.setTextColor(GxEPD_WHITE);
+      display.println(settingsMenuItems[i]);
+    }
+  }
+
+  display.display(partialRefresh);
+
+  guiState = SETTINGS_MENU_STATE;
+  alreadyInMenu = false;
+}
+
+void Watchy::showFastSettingsMenu(byte settingsMenuIndex) {
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setFont(&FreeMonoBold9pt7b);
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  int16_t yPos;
+
+  const char *settingsMenuItems[] = {"About Watchy", "Vibrate Motor", "Show Accelerometer",
+                                      "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
+                                      "Sync NTP",     "Set Timezone"};
+  for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
+    yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
+    display.setCursor(0, yPos);
+    if (i == settingsMenuIndex) {
+      display.getTextBounds(settingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
+      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+      display.setTextColor(GxEPD_BLACK);
+      display.println(settingsMenuItems[i]);
+    } else {
+      display.setTextColor(GxEPD_WHITE);
+      display.println(settingsMenuItems[i]);
+    }
+  }
+
+  display.display(true);
+
+  guiState = SETTINGS_MENU_STATE;
+}
+
+void Watchy::_captureStepsAtMidnight() {
+  if (!(currentTime.Hour == 0 && currentTime.Minute == 0)) return;
+
+  const long today = dayNumber(currentTime);
+
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  const long lastDay = prefs.getLong(kPrefsStepsDayKey, 0);
+  prefs.end();
+
+  if (lastDay == today) return; // already captured for this day (multiple ticks at 00:00 are possible)
+
+  int32_t history[kStepsHistoryDays];
+  loadStepsHistory(history);
+  for (int i = kStepsHistoryDays - 1; i > 0; i--) history[i] = history[i - 1];
+  history[0] = (int32_t)sensor.getCounter();
+
+  Preferences writePrefs;
+  writePrefs.begin(kPrefsNamespace, false);  // read-write
+  writePrefs.putBytes(kPrefsStepsHistKey, history, sizeof(history));
+  writePrefs.putLong(kPrefsStepsDayKey, today);
+  writePrefs.end();
+
+  sensor.resetStepCounter();
+}
+
+void Watchy::showStopwatch() {
+  guiState = APP_STATE;
+
+  bool running = false;
+  unsigned long startMillis = 0;
+  unsigned long elapsedMillis = 0;
+  unsigned long lastShownSecond = 9999999; // force the first draw
+
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+
+  // Same button-bounce hazard as setTimezone()/changeWatchface(): Menu was
+  // just used to select "Stopwatch" from the menu.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  while (1) {
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      break;
+    }
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      if (running) {
+        elapsedMillis += millis() - startMillis;
+      } else {
+        startMillis = millis();
+      }
+      running = !running;
+      while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) delay(10); // one press = one toggle
+    }
+    if (!running && digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      elapsedMillis = 0;
+      while (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+
+    const unsigned long totalMillis = elapsedMillis + (running ? (millis() - startMillis) : 0);
+    const unsigned long totalSeconds = totalMillis / 1000;
+
+    // Partial e-ink refreshes roughly once a second while running is plenty
+    // for a stopwatch and keeps the display from being hammered; still
+    // redraws right away on every Menu/Up press above for input feedback.
+    if (totalSeconds != lastShownSecond) {
+      lastShownSecond = totalSeconds;
+      display.fillScreen(GxEPD_BLACK);
+      display.setTextColor(GxEPD_WHITE);
+      display.setFont(&FreeMonoBold9pt7b);
+      display.setCursor(20, 60);
+      display.println("Stopwatch");
+
+      char buf[16];
+      const unsigned long hh = totalSeconds / 3600;
+      const unsigned long mm = (totalSeconds % 3600) / 60;
+      const unsigned long ss = totalSeconds % 60;
+      snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu", hh, mm, ss);
+      display.setCursor(30, 110);
+      display.println(buf);
+
+      display.setCursor(20, 160);
+      display.println(running ? "Menu: Stop" : "Menu: Start");
+      if (!running) {
+        display.setCursor(20, 185);
+        display.println("Up: Reset");
+      }
+      display.display(true); // partial refresh
+    }
+  }
+
+  showMenu(menuIndex, false);
+}
+
+void Watchy::showStepsHistory() {
+  guiState = APP_STATE;
+
+  int32_t history[kStepsHistoryDays];
+  loadStepsHistory(history);
+
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setTextColor(GxEPD_WHITE);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(20, 30);
+  display.println("Steps - 7 Days");
+
+  static constexpr const char *kLabels[kStepsHistoryDays] = {"Yesterday", "2 days ago", "3 days ago",
+                                                              "4 days ago", "5 days ago", "6 days ago",
+                                                              "7 days ago"};
+  for (int i = 0; i < kStepsHistoryDays; i++) {
+    display.setCursor(5, 55 + i * 20);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%-11s %6ld", kLabels[i], (long)history[i]);
+    display.println(buf);
+  }
+  display.display(false); // full refresh
+
+  pinMode(BACK_BTN_PIN, INPUT);
+  while (digitalRead(BACK_BTN_PIN) != ACTIVE_LOW) {
+    delay(50);
+  }
+  while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10); // wait for release
+
+  showMenu(menuIndex, false);
 }
 
 void Watchy::showAbout() {
@@ -475,7 +715,7 @@ void Watchy::showBuzz() {
   display.println("Buzz!");
   display.display(false); // full refresh
   vibMotor();
-  showMenu(menuIndex, false);
+  showSettingsMenu(settingsMenuIndex, false);
 }
 
 void Watchy::vibMotor(uint8_t intervalMs, uint8_t length) {
@@ -653,7 +893,7 @@ void Watchy::setTime() {
 
   RTC.set(tm);
 
-  showMenu(menuIndex, false);
+  showSettingsMenu(settingsMenuIndex, false);
 }
 
 void Watchy::setTimezone() {
@@ -719,7 +959,7 @@ void Watchy::setTimezone() {
     saveManualGmtOffset(offsetSec);
   }
 
-  showMenu(menuIndex, false);
+  showSettingsMenu(settingsMenuIndex, false);
 }
 
 void Watchy::showAccelerometer() {
@@ -791,7 +1031,7 @@ void Watchy::showAccelerometer() {
     }
   }
 
-  showMenu(menuIndex, false);
+  showSettingsMenu(settingsMenuIndex, false);
 }
 
 void Watchy::showWatchFace(bool partialRefresh) {
@@ -1264,7 +1504,7 @@ void Watchy::showSyncNTP() {
   }
   display.display(true); // full refresh
   delay(3000);
-  showMenu(menuIndex, false);
+  showSettingsMenu(settingsMenuIndex, false);
 }
 
 bool Watchy::syncNTP() { // NTP sync - call after connecting to WiFi and

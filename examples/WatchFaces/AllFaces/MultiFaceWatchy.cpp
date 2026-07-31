@@ -248,10 +248,9 @@ void MultiFaceWatchy::draw7SegDate() {
 
 void MultiFaceWatchy::draw7SegSteps() {
   using namespace face7seg;
-  // reset step counter at midnight
-  if (currentTime.Hour == 0 && currentTime.Minute == 0) {
-    sensor.resetStepCounter();
-  }
+  // Midnight reset+history-capture now happens centrally in
+  // Watchy::_captureStepsAtMidnight(), regardless of which face is active -
+  // see Watchy.cpp's WATCHFACE_STATE tick handler.
   uint32_t stepCount = sensor.getCounter();
   display.drawBitmap(10, 165, steps, 19, 23, k7SegDarkMode ? GxEPD_WHITE : GxEPD_BLACK);
   display.setCursor(35, 190);

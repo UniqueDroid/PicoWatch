@@ -84,6 +84,12 @@ public:
   virtual void handleButtonPress();
   void showMenu(byte menuIndex, bool partialRefresh);
   void showFastMenu(byte menuIndex);
+  // Settings submenu (About/Vibrate/Accelerometer/Set Time/WiFi/Sync NTP/Set
+  // Timezone) - reached via the top-level "Settings" entry, same
+  // list-rendering pattern as showMenu()/showFastMenu() but for
+  // SETTINGS_MENU_LENGTH items and SETTINGS_MENU_STATE.
+  void showSettingsMenu(byte settingsMenuIndex, bool partialRefresh);
+  void showFastSettingsMenu(byte settingsMenuIndex);
   void showAbout();
   void showBuzz();
   void showAccelerometer();
@@ -98,6 +104,14 @@ public:
   bool connectWiFi();
   weatherData getWeatherData();
   void updateFWBegin();
+
+  // Top-level Stopwatch and Steps (Last 7 Days) apps - generic, not
+  // per-watchface, so implemented directly here rather than as virtual
+  // hooks. See Watchy.cpp for the step-history capture, which runs once per
+  // minute regardless of which face is active (previously only happened to
+  // run inside 7_SEG's own draw method).
+  void showStopwatch();
+  void showStepsHistory();
 
   void showWatchFace(bool partialRefresh);
   virtual void drawWatchFace(); // override this method for different watch
@@ -119,6 +133,11 @@ public:
 
 private:
   void _bmaConfig();
+  // If a new day has started since the last check, records yesterday's step
+  // count into the persisted 7-day history and resets the live counter.
+  // Called once per minute from init()'s WATCHFACE_STATE tick handler,
+  // regardless of which watchface is active.
+  void _captureStepsAtMidnight();
   static void _configModeCallback(WiFiManager *myWiFiManager);
   static uint16_t _readRegister(uint8_t address, uint8_t reg, uint8_t *data,
                                 uint16_t len);
@@ -130,6 +149,7 @@ private:
 
 extern RTC_DATA_ATTR int guiState;
 extern RTC_DATA_ATTR int menuIndex;
+extern RTC_DATA_ATTR int settingsMenuIndex;
 extern RTC_DATA_ATTR BMA423 sensor;
 extern RTC_DATA_ATTR bool WIFI_CONFIGURED;
 extern RTC_DATA_ATTR bool BLE_CONFIGURED;

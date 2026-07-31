@@ -95,12 +95,14 @@
 #define WIFI_AP_TIMEOUT 60
 #define WIFI_AP_SSID    "Watchy AP"
 // menu
-#define WATCHFACE_STATE -1
-#define MAIN_MENU_STATE 0
-#define APP_STATE       1
-#define FW_UPDATE_STATE 2
+#define WATCHFACE_STATE     -1
+#define MAIN_MENU_STATE     0
+#define APP_STATE           1
+#define FW_UPDATE_STATE     2
+#define SETTINGS_MENU_STATE 3
 #define MENU_HEIGHT     25
-#define MENU_LENGTH     8
+#define MENU_LENGTH     4           // top-level: Change Watchface, Stopwatch, Steps, Settings
+#define SETTINGS_MENU_LENGTH 7      // About, Vibrate, Accelerometer, Set Time, WiFi, Sync NTP, Set Timezone
 // set time
 #define SET_HOUR   0
 #define SET_MINUTE 1
