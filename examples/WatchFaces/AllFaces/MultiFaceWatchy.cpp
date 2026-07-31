@@ -2,6 +2,7 @@
 
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include <Fonts/FreeSansBold9pt7b.h>
+#include <Preferences.h>
 
 #include "DSEG7_Classic_Bold_25.h"
 #include "DSEG7_Classic_Regular_15.h"
@@ -27,6 +28,28 @@ RTC_DATA_ATTR int selectedFace = 0;
 namespace {
 constexpr const char *kFaceNames[MultiFaceWatchy::FACE_COUNT] = {
     "Basic", "7 Segment", "DOS", "MacPaint", "Mario", "Pokemon", "Starry Horizon", "Tetris"};
+
+// Persisted in flash (NVS) so a reset doesn't silently revert to face 0 -
+// same "watchy" namespace Watchy.cpp's setTimezone() uses, different key.
+constexpr const char *kPrefsNamespace = "watchy";
+constexpr const char *kPrefsFaceKey = "face";
+}  // namespace
+
+void MultiFaceWatchy::onReset() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  selectedFace = prefs.getInt(kPrefsFaceKey, 0);
+  prefs.end();
+  if (selectedFace < 0 || selectedFace >= FACE_COUNT) selectedFace = 0;
+}
+
+namespace {
+void saveSelectedFace(int face) {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putInt(kPrefsFaceKey, face);
+  prefs.end();
+}
 }  // namespace
 
 void MultiFaceWatchy::changeWatchface() {
@@ -86,6 +109,8 @@ void MultiFaceWatchy::changeWatchface() {
 
   if (confirmed) {
     selectedFace = pick;
+    saveSelectedFace(pick);
+    RTC.read(currentTime);  // otherwise the new face draws with a stale/zeroed time
     showWatchFace(false);
   } else {
     showMenu(menuIndex, false);

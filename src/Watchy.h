@@ -111,6 +111,12 @@ public:
   // handleButtonPress() checks guiState afterward rather than assuming.
   virtual void changeWatchface() {}
 
+  // Called once early during a true power-on reset (not a deep-sleep wake),
+  // before the first showWatchFace(). No-op by default; MultiFaceWatchy uses
+  // it to load its persisted selectedFace from flash so a reset doesn't
+  // silently fall back to face 0.
+  virtual void onReset() {}
+
 private:
   void _bmaConfig();
   static void _configModeCallback(WiFiManager *myWiFiManager);

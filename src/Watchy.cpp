@@ -113,6 +113,7 @@ void Watchy::init(String datetime) {
     break;
   #endif
   default: // reset
+    onReset();
     RTC.config(datetime);
     _bmaConfig();
     #ifdef ARDUINO_ESP32S3_DEV

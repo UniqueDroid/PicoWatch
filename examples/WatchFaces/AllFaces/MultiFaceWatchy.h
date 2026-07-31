@@ -46,6 +46,7 @@ class MultiFaceWatchy : public Watchy {
   using Watchy::Watchy;
   void drawWatchFace() override;
   void changeWatchface() override;
+  void onReset() override;
 };
 
 #endif
