@@ -1,4 +1,39 @@
 #include "Watchy.h"
+#include <Preferences.h>
+
+namespace {
+// Manual timezone override, persisted in flash (NVS) so it survives power
+// loss, not just deep sleep (unlike the RTC_DATA_ATTR globals below). Once
+// set via Watchy::setTimezone(), the weather-fetch code stops overwriting
+// gmtOffset with the queried city's timezone (see the weather API handling
+// further down) - that auto-overwrite was clobbering manually-corrected
+// times whenever weather/NTP synced.
+constexpr const char *kPrefsNamespace = "watchy";
+constexpr const char *kPrefsManualKey = "tzManual";
+constexpr const char *kPrefsOffsetKey = "gmtOffset";
+constexpr long kGmtOffsetStepSec = 15 * 60;       // 15 minutes - covers every real-world UTC offset (e.g. UTC+5:45)
+constexpr long kGmtOffsetMinSec = -12 * 3600;      // UTC-12
+constexpr long kGmtOffsetMaxSec = 14 * 3600;       // UTC+14
+
+bool loadManualGmtOffset(long &outOffsetSec) {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  bool manual = prefs.getBool(kPrefsManualKey, false);
+  if (manual) {
+    outOffsetSec = prefs.getLong(kPrefsOffsetKey, 0);
+  }
+  prefs.end();
+  return manual;
+}
+
+void saveManualGmtOffset(long offsetSec) {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putBool(kPrefsManualKey, true);
+  prefs.putLong(kPrefsOffsetKey, offsetSec);
+  prefs.end();
+}
+}  // namespace
 
 #ifdef ARDUINO_ESP32S3_DEV
   Watchy32KRTC Watchy::RTC;
@@ -84,7 +119,10 @@ void Watchy::init(String datetime) {
     pinMode(USB_DET_PIN, INPUT);
     USB_PLUGGED_IN = (digitalRead(USB_DET_PIN) == 1);
     #endif    
-    gmtOffset = settings.gmtOffset;
+    {
+      long manualOffset;
+      gmtOffset = loadManualGmtOffset(manualOffset) ? manualOffset : settings.gmtOffset;
+    }
     RTC.read(currentTime);
     RTC.read(bootTime);
     showWatchFace(false); // full update on reset
@@ -165,6 +203,9 @@ void Watchy::handleButtonPress() {
         break;
       case 6:
         cycleWatchface();
+        break;
+      case 7:
+        setTimezone();
         break;
       default:
         break;
@@ -251,6 +292,9 @@ void Watchy::handleButtonPress() {
           case 6:
             cycleWatchface();
             break;
+          case 7:
+            setTimezone();
+            break;
           default:
             break;
           }
@@ -302,9 +346,9 @@ void Watchy::showMenu(byte menuIndex, bool partialRefresh) {
   int16_t yPos;
 
   const char *menuItems[] = {
-      "About Watchy", "Vibrate Motor", "Show Accelerometer",
-      "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-      "Sync NTP",     "Change Watchface"};
+      "About Watchy", "Vibrate Motor",    "Show Accelerometer",
+      "Set Time",     "Setup WiFi",       /*"Update Firmware",*/
+      "Sync NTP",     "Change Watchface", "Set Timezone"};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -335,9 +379,9 @@ void Watchy::showFastMenu(byte menuIndex) {
   int16_t yPos;
 
   const char *menuItems[] = {
-      "About Watchy", "Vibrate Motor", "Show Accelerometer",
-      "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-      "Sync NTP",     "Change Watchface"};
+      "About Watchy", "Vibrate Motor",    "Show Accelerometer",
+      "Set Time",     "Setup WiFi",       /*"Update Firmware",*/
+      "Sync NTP",     "Change Watchface", "Set Timezone"};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -596,6 +640,63 @@ void Watchy::setTime() {
   showMenu(menuIndex, false);
 }
 
+void Watchy::setTimezone() {
+  guiState = APP_STATE;
+
+  long offsetSec = gmtOffset;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  display.setFullWindow();
+
+  bool save = true;
+  while (1) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      save = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      save = false;  // single field - Back cancels instead of stepping back
+      break;
+    }
+
+    blink = 1 - blink;
+
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      offsetSec = (offsetSec + kGmtOffsetStepSec > kGmtOffsetMaxSec) ? kGmtOffsetMinSec
+                                                                      : offsetSec + kGmtOffsetStepSec;
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      offsetSec = (offsetSec - kGmtOffsetStepSec < kGmtOffsetMinSec) ? kGmtOffsetMaxSec
+                                                                      : offsetSec - kGmtOffsetStepSec;
+    }
+
+    display.fillScreen(GxEPD_BLACK);
+    display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(20, 100);
+    char buf[16];
+    long absOffset = offsetSec < 0 ? -offsetSec : offsetSec;
+    snprintf(buf, sizeof(buf), "GMT%c%02ld:%02ld", offsetSec < 0 ? '-' : '+', absOffset / 3600,
+             (absOffset % 3600) / 60);
+    display.print(buf);
+    display.display(true);  // partial refresh
+  }
+
+  if (save) {
+    gmtOffset = offsetSec;
+    saveManualGmtOffset(offsetSec);
+  }
+
+  showMenu(menuIndex, false);
+}
+
 void Watchy::showAccelerometer() {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
@@ -733,8 +834,15 @@ weatherData Watchy::_getWeatherData(String cityID, String lat, String lon, Strin
 	      currentWeather.external = true;
 		        breakTime((time_t)(int)responseObject["sys"]["sunrise"], currentWeather.sunrise);
 		        breakTime((time_t)(int)responseObject["sys"]["sunset"], currentWeather.sunset);
-        // sync NTP during weather API call and use timezone of lat & lon
-        gmtOffset = int(responseObject["timezone"]);
+        // sync NTP during weather API call and use timezone of lat & lon,
+        // unless the user has set a timezone manually (see setTimezone()) -
+        // otherwise this would silently overwrite their choice on every sync.
+        {
+          long manualOffset;
+          if (!loadManualGmtOffset(manualOffset)) {
+            gmtOffset = int(responseObject["timezone"]);
+          }
+        }
         syncNTP(gmtOffset);
       } else {
         // http error

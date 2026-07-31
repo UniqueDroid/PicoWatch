@@ -93,6 +93,7 @@ public:
   bool syncNTP(long gmt);
   bool syncNTP(long gmt, String ntpServer);
   void setTime();
+  void setTimezone(); // interactive GMT offset picker, persisted in flash (NVS) - see Watchy.cpp
   void setupWifi();
   bool connectWiFi();
   weatherData getWeatherData();
