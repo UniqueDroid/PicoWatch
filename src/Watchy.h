@@ -102,6 +102,13 @@ public:
   virtual void drawWatchFace(); // override this method for different watch
                                 // faces
 
+  // Advances to the next watchface design and immediately redraws, then
+  // returns to WATCHFACE_STATE - called from the "Change Watchface" menu
+  // item. No-op by default; only meaningful for a Watchy subclass that
+  // actually holds more than one drawWatchFace() implementation (see
+  // MultiFaceWatchy).
+  virtual void cycleWatchface() {}
+
 private:
   void _bmaConfig();
   static void _configModeCallback(WiFiManager *myWiFiManager);

@@ -100,7 +100,7 @@
 #define APP_STATE       1
 #define FW_UPDATE_STATE 2
 #define MENU_HEIGHT     25
-#define MENU_LENGTH     6
+#define MENU_LENGTH     7
 // set time
 #define SET_HOUR   0
 #define SET_MINUTE 1

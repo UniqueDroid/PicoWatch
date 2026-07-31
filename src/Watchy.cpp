@@ -163,6 +163,9 @@ void Watchy::handleButtonPress() {
       case 5:
         showSyncNTP();
         break;
+      case 6:
+        cycleWatchface();
+        break;
       default:
         break;
       }
@@ -245,6 +248,9 @@ void Watchy::handleButtonPress() {
           case 5:
             showSyncNTP();
             break;
+          case 6:
+            cycleWatchface();
+            break;
           default:
             break;
           }
@@ -298,7 +304,7 @@ void Watchy::showMenu(byte menuIndex, bool partialRefresh) {
   const char *menuItems[] = {
       "About Watchy", "Vibrate Motor", "Show Accelerometer",
       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-      "Sync NTP"};
+      "Sync NTP",     "Change Watchface"};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -331,7 +337,7 @@ void Watchy::showFastMenu(byte menuIndex) {
   const char *menuItems[] = {
       "About Watchy", "Vibrate Motor", "Show Accelerometer",
       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-      "Sync NTP"};
+      "Sync NTP",     "Change Watchface"};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
