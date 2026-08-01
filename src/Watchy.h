@@ -2,13 +2,9 @@
 #define WATCHY_H
 
 #include <Arduino.h>
-#include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
-// Step 2/5 of re-adding the WiFi/Update feature in isolation - these three
-// are pulled in now but not used by any code yet, to test whether merely
-// linking them (before WiFiManager is even removed) affects anything.
 #include <WebServer.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
@@ -150,7 +146,6 @@ private:
   // Called once per minute from init()'s WATCHFACE_STATE tick handler,
   // regardless of which watchface is active.
   void _captureStepsAtMidnight();
-  static void _configModeCallback(WiFiManager *myWiFiManager);
   static uint16_t _readRegister(uint8_t address, uint8_t reg, uint8_t *data,
                                 uint16_t len);
   static uint16_t _writeRegister(uint8_t address, uint8_t reg, uint8_t *data,
