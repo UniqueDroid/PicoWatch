@@ -1,5 +1,6 @@
 #include "Watchy.h"
 #include <Preferences.h>
+#include <mbedtls/sha256.h>
 
 // Cached copy of the persisted alarm (see setAlarm()/onReset()) - survives
 // deep sleep like guiState/menuIndex; loaded from flash once on reset rather
@@ -347,6 +348,9 @@ void dispatchSettingsMenu(Watchy *w, int index) {
   case 7:
     w->setWeatherCity();
     break;
+  case 8:
+    w->updateFromGithub();
+    break;
   default:
     break;
   }
@@ -569,13 +573,14 @@ void Watchy::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
 
   const char *settingsMenuItems[] = {"About Watchy", "Vibrate Motor", "Show Accelerometer",
                                       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-                                      "Sync NTP",     "Set Timezone", "Set City"};
+                                      "Sync NTP",     "Set Timezone", "Set City",
+                                      "Update via GitHub"};
   for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
-    yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
+    yPos = SETTINGS_MENU_ITEM_HEIGHT + (SETTINGS_MENU_ITEM_HEIGHT * i);
     display.setCursor(0, yPos);
     if (i == settingsMenuIndex) {
       display.getTextBounds(settingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+      display.fillRect(x1 - 1, y1 - 10, 200, h + 12, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
       display.println(settingsMenuItems[i]);
     } else {
@@ -601,13 +606,14 @@ void Watchy::showFastSettingsMenu(byte settingsMenuIndex) {
 
   const char *settingsMenuItems[] = {"About Watchy", "Vibrate Motor", "Show Accelerometer",
                                       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-                                      "Sync NTP",     "Set Timezone", "Set City"};
+                                      "Sync NTP",     "Set Timezone", "Set City",
+                                      "Update via GitHub"};
   for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
-    yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
+    yPos = SETTINGS_MENU_ITEM_HEIGHT + (SETTINGS_MENU_ITEM_HEIGHT * i);
     display.setCursor(0, yPos);
     if (i == settingsMenuIndex) {
       display.getTextBounds(settingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+      display.fillRect(x1 - 1, y1 - 10, 200, h + 12, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
       display.println(settingsMenuItems[i]);
     } else {
@@ -1714,51 +1720,433 @@ void Watchy::_bmaConfig() {
   sensor.enableWakeupInterrupt();
 }
 
+namespace {
+// Same dark navy/cyan design system as pfsense-status-esp32's web config
+// portal, reused here per Jan's request to port both the update mechanics
+// AND the visual design rather than build something new-looking from
+// scratch (see feedback memory on reusing reference style, not just logic).
+constexpr const char *kWebUiCss =
+    ":root{--accent:#4fc3f7;--accent-2:#0f6fa8;--bg:#070c13;--bg-grad:#0d2338;"
+    "--surface:#101823;--border:#22303f;--text:#e7f3fb;--text-mute:#a9bcca;"
+    "--ok:#4ade80;--bad:#dc3630}"
+    "body{text-align:center;font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;"
+    "background:radial-gradient(ellipse 900px 500px at 50% -10%,var(--bg-grad),transparent) var(--bg);"
+    "color:var(--text)}"
+    "div,input,select{padding:5px;font-size:1em;margin:5px 0;box-sizing:border-box}"
+    "input,select{border-radius:10px;width:100%;background:var(--surface);"
+    "border:1px solid var(--border);color:var(--text)}"
+    "button{border-radius:999px;width:100%;cursor:pointer;border:0;"
+    "background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#0d1015;"
+    "font-weight:600;line-height:2.4rem;font-size:1.2rem;margin:6px 0}"
+    "button.D{background:var(--bad);color:#fff}"
+    ".wrap{text-align:left;display:inline-block;min-width:260px;max-width:500px}"
+    "hr{border:none;border-top:1px solid var(--border);margin:18px 0}"
+    "a{color:var(--accent);font-weight:700;text-decoration:none}"
+    ".msg{padding:20px;margin:20px 0;border:1px solid var(--border);border-radius:10px;"
+    "border-left-width:5px;border-left-color:#777;background:var(--surface);color:var(--text-mute)}"
+    ".msg.S{border-left-color:var(--ok)}.msg.D{border-left-color:var(--bad)}"
+    ".msg.P{border-left-color:var(--accent)}";
+
+String webUiPage(const String &title, const String &bodyHtml) {
+  String html;
+  html.reserve(bodyHtml.length() + 700);
+  html += "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
+          "<meta name='viewport' content='width=device-width,initial-scale=1,user-scalable=no'/>"
+          "<title>";
+  html += title;
+  html += "</title><style>";
+  html += kWebUiCss;
+  html += "</style></head><body><div class='wrap'><h1>PicoWatch</h1><h3>";
+  html += title;
+  html += "</h3>";
+  html += bodyHtml;
+  html += "</div></body></html>";
+  return html;
+}
+}  // namespace
+
 void Watchy::setupWifi() {
   display.epd2.setBusyCallback(0); // temporarily disable lightsleep on busy
-  WiFiManager wifiManager;
-  wifiManager.resetSettings();
-  wifiManager.setTimeout(WIFI_AP_TIMEOUT);
-  wifiManager.setAPCallback(_configModeCallback);
-  display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
-  if (!wifiManager.autoConnect(WIFI_AP_SSID)) { // WiFi setup failed
-    display.println("Setup failed &");
-    display.println("timed out!");
-  } else {
-    display.println("Connected to:");
-    display.println(WiFi.SSID());
-		display.println("Local IP:");
-		display.println(WiFi.localIP());
-    weatherIntervalCounter = -1; // Reset to force weather to be read again
-    lastIPAddress = WiFi.localIP();
-    WiFi.SSID().toCharArray(lastSSID, 30);
-  }
-  display.display(false); // full refresh
-  // turn off radios
-  WiFi.mode(WIFI_OFF);
-  btStop();
-  // enable lightsleep on busy
-  display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
-  guiState = APP_STATE;
-}
-
-void Watchy::_configModeCallback(WiFiManager *myWiFiManager) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
   display.setTextColor(GxEPD_WHITE);
   display.setCursor(0, 30);
-  display.println("Connect to");
-  display.print("SSID: ");
-  display.println(WIFI_AP_SSID);
-  display.print("IP: ");
-  display.println(WiFi.softAPIP());
-	display.println("MAC address:");
-	display.println(WiFi.softAPmacAddress().c_str());
-  display.display(false); // full refresh
+  display.println("Connecting...");
+  display.display(false);
+
+  bool connected = connectWiFi(); // try saved credentials first
+  bool cancelled = false;
+  WebServer server(80);
+
+  if (!connected) {
+    // No saved/working credentials - bring up the setup AP + join page. Only
+    // active while this function runs (i.e. only after the user picks
+    // "Setup WiFi" from the Settings menu), and auto-shuts-down after
+    // WIFI_AP_TIMEOUT seconds if nobody ever connects to it.
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(WIFI_AP_SSID);
+
+    display.fillScreen(GxEPD_BLACK);
+    display.setCursor(0, 20);
+    display.println("Connect phone to:");
+    display.println(WIFI_AP_SSID);
+    display.println("Then open:");
+    display.println(WiFi.softAPIP());
+    display.println(" ");
+    display.println("Back to cancel");
+    display.display(false);
+
+    bool joinSubmitted = false;
+    String joinSsid, joinPass;
+
+    server.on("/", HTTP_GET, [&]() {
+      String body =
+          "<form method='POST' action='/join'>"
+          "<label for='s'>WiFi SSID</label><input id='s' name='s' maxlength='32' "
+          "autocorrect='off' autocapitalize='none'>"
+          "<label for='p'>Password</label><input id='p' name='p' maxlength='64' type='password'>"
+          "<button type='submit'>Connect</button></form>";
+      server.send(200, "text/html", webUiPage("Setup WiFi", body));
+    });
+    server.on("/join", HTTP_POST, [&]() {
+      joinSsid = server.arg("s");
+      joinPass = server.arg("p");
+      joinSubmitted = true;
+      server.send(200, "text/html",
+                   webUiPage("Setup WiFi",
+                             "<div class='msg P'><strong>Connecting&hellip;</strong><br/>"
+                             "Check the watch display.</div>"));
+    });
+    server.begin();
+
+    unsigned long lastStationSeen = millis();
+    while (!joinSubmitted) {
+      server.handleClient();
+      if (WiFi.softAPgetStationNum() > 0) {
+        lastStationSeen = millis(); // reset idle timer while a phone is associated
+      }
+      if (millis() - lastStationSeen > (unsigned long)WIFI_AP_TIMEOUT * 1000UL) {
+        break; // nobody ever joined the AP - shut it down
+      }
+      if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+        cancelled = true;
+        break;
+      }
+      delay(20);
+    }
+    server.stop();
+
+    if (joinSubmitted) {
+      display.fillScreen(GxEPD_BLACK);
+      display.setCursor(0, 30);
+      display.println("Joining:");
+      display.println(joinSsid);
+      display.display(false);
+
+      WiFi.mode(WIFI_STA);
+      WiFi.begin(joinSsid.c_str(), joinPass.c_str());
+      unsigned long attemptStart = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - attemptStart < 15000) {
+        delay(200);
+      }
+      connected = (WiFi.status() == WL_CONNECTED);
+    }
+    WiFi.softAPdisconnect(true);
+  }
+
+  if (connected) {
+    WIFI_CONFIGURED = true;
+    weatherIntervalCounter = -1; // force a fresh weather fetch, may be on a new network
+    lastIPAddress = WiFi.localIP();
+    WiFi.SSID().toCharArray(lastSSID, 30);
+
+    display.fillScreen(GxEPD_BLACK);
+    display.setCursor(0, 20);
+    display.println("Connected to:");
+    display.println(lastSSID);
+    display.println("Open in browser:");
+    display.println(WiFi.localIP());
+    display.println(" ");
+    display.println("Back to exit");
+    display.display(false);
+
+    unsigned long lastActivity = millis();
+
+    server.on("/", HTTP_GET, [&]() {
+      lastActivity = millis();
+      String body = "<div class='msg S'><strong>Connected</strong> to " + String(lastSSID) + "</div>"
+                    "<form action='/file-update' method='get'><button>File Update</button></form>"
+                    "<form action='/github-update' method='get'><button>GitHub Update</button></form>";
+      server.send(200, "text/html", webUiPage("PicoWatch", body));
+    });
+
+    server.on("/file-update", HTTP_GET, [&]() {
+      lastActivity = millis();
+      String body =
+          "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
+          "<input type='file' name='update' accept='.bin'>"
+          "<button type='submit'>Upload &amp; Flash</button></form>"
+          "<hr><form action='/' method='get'><button>Back</button></form>";
+      server.send(200, "text/html", webUiPage("File Update", body));
+    });
+    server.on(
+        "/file-update", HTTP_POST,
+        [&]() {
+          lastActivity = millis();
+          server.sendHeader("Connection", "close");
+          const bool ok = !Update.hasError();
+          server.send(200, "text/html",
+                      webUiPage("File Update",
+                                ok ? "<div class='msg S'><strong>Update OK</strong><br/>Rebooting&hellip;</div>"
+                                   : "<div class='msg D'><strong>Update failed.</strong></div>"));
+          if (ok) {
+            delay(500);
+            ESP.restart();
+          }
+        },
+        [&]() {
+          lastActivity = millis();
+          HTTPUpload &upload = server.upload();
+          if (upload.status == UPLOAD_FILE_START) {
+            display.fillScreen(GxEPD_BLACK);
+            display.setCursor(0, 30);
+            display.println("Receiving update");
+            display.println("via File Update...");
+            display.display(false);
+            Update.begin(UPDATE_SIZE_UNKNOWN);
+          } else if (upload.status == UPLOAD_FILE_WRITE) {
+            Update.write(upload.buf, upload.currentSize);
+          } else if (upload.status == UPLOAD_FILE_END) {
+            Update.end(true);
+          }
+        });
+
+    server.on("/github-update", HTTP_GET, [&]() {
+      lastActivity = millis();
+      server.send(200, "text/html",
+                   webUiPage("GitHub Update",
+                             "<div class='msg P'>Starting GitHub update check&hellip;<br/>"
+                             "Watch the device screen for progress.</div>"));
+      updateFromGithub(); // blocking; reboots on success, falls through here on failure
+      lastActivity = millis();
+    });
+
+    server.begin();
+
+    while (true) {
+      server.handleClient();
+      if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) break;
+      if (millis() - lastActivity > (unsigned long)WIFI_WEBSERVER_IDLE_TIMEOUT * 1000UL) break;
+      delay(10);
+    }
+    server.stop();
+  } else if (!cancelled) {
+    display.fillScreen(GxEPD_BLACK);
+    display.setCursor(0, 30);
+    display.println("Setup failed");
+    display.println("or timed out.");
+    display.display(false);
+    delay(2000);
+  }
+
+  WiFi.mode(WIFI_OFF);
+  btStop();
+  display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
+  guiState = APP_STATE;
+}
+
+void Watchy::updateFromGithub() {
+  guiState = APP_STATE;
+  display.epd2.setBusyCallback(0); // temporarily disable lightsleep on busy
+
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setTextColor(GxEPD_WHITE);
+  display.setCursor(0, 30);
+  display.println("Checking GitHub...");
+  display.display(false);
+
+  auto showResultAndReturn = [&](const char *line1, const char *line2 = nullptr) {
+    display.fillScreen(GxEPD_BLACK);
+    display.setCursor(0, 30);
+    display.println(line1);
+    if (line2) display.println(line2);
+    display.display(false);
+    delay(2500);
+    display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
+  };
+
+  if (!connectWiFi()) {
+    showResultAndReturn("WiFi not connected.");
+    return;
+  }
+
+  WiFiClientSecure apiClient;
+  apiClient.setInsecure();
+  HTTPClient https;
+  https.setConnectTimeout(5000);
+  String apiUrl = String("https://api.github.com/repos/") + GITHUB_OTA_OWNER + "/" +
+                  GITHUB_OTA_REPO + "/releases/latest";
+  https.begin(apiClient, apiUrl);
+  https.addHeader("User-Agent", "PicoWatch");
+  https.addHeader("Accept", "application/vnd.github+json");
+  const int code = https.GET();
+  if (code != 200) {
+    https.end();
+    showResultAndReturn("No release found", "or network error.");
+    return;
+  }
+  const String payload = https.getString();
+  https.end();
+
+  JSONVar release = JSON.parse(payload);
+  if (JSON.typeof(release) == "undefined") {
+    showResultAndReturn("Bad release data.");
+    return;
+  }
+
+  const String tag = (const char *)release["tag_name"];
+  int latestMajor = 0, latestMinor = 0, latestPatch = 0;
+  sscanf(tag.c_str(), "v%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
+  const bool newer =
+      (latestMajor > SOFTWARE_VERSION_MAJOR) ||
+      (latestMajor == SOFTWARE_VERSION_MAJOR && latestMinor > SOFTWARE_VERSION_MINOR) ||
+      (latestMajor == SOFTWARE_VERSION_MAJOR && latestMinor == SOFTWARE_VERSION_MINOR &&
+       latestPatch > SOFTWARE_VERSION_PATCH);
+
+  if (!newer) {
+    display.fillScreen(GxEPD_BLACK);
+    display.setCursor(0, 30);
+    display.println("Already on the");
+    display.println("latest version:");
+    display.println(tag);
+    display.display(false);
+    delay(2500);
+    display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
+    return;
+  }
+
+  JSONVar assets = release["assets"];
+  String downloadUrl;
+  String digestHex; // hex part of the asset's "sha256:<hex>" digest field, if present
+  for (int i = 0; i < assets.length(); i++) {
+    const char *name = (const char *)assets[i]["name"];
+    if (strcmp(name, GITHUB_OTA_ASSET_NAME) == 0) {
+      downloadUrl = (const char *)assets[i]["browser_download_url"];
+      if (JSON.typeof(assets[i]["digest"]) != "undefined") {
+        const String digest = (const char *)assets[i]["digest"];
+        const int colon = digest.indexOf(':');
+        digestHex = (colon >= 0) ? digest.substring(colon + 1) : digest;
+      }
+      break;
+    }
+  }
+
+  if (downloadUrl.length() == 0) {
+    showResultAndReturn("Asset not found", "in latest release.");
+    return;
+  }
+
+  display.fillScreen(GxEPD_BLACK);
+  display.setCursor(0, 30);
+  display.println("Downloading:");
+  display.println(tag);
+  display.println(" ");
+  display.println("0%");
+  display.display(false);
+
+  WiFiClientSecure dlClient;
+  dlClient.setInsecure();
+  HTTPClient dl;
+  dl.setConnectTimeout(5000);
+  dl.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  dl.begin(dlClient, downloadUrl);
+  dl.addHeader("User-Agent", "PicoWatch");
+  const int dlCode = dl.GET();
+  if (dlCode != 200) {
+    dl.end();
+    showResultAndReturn("Download failed.");
+    return;
+  }
+
+  const int total = dl.getSize(); // -1 if unknown
+  if (!Update.begin(total > 0 ? total : UPDATE_SIZE_UNKNOWN)) {
+    dl.end();
+    showResultAndReturn("Not enough space", "for update.");
+    return;
+  }
+
+  mbedtls_sha256_context sha;
+  mbedtls_sha256_init(&sha);
+  mbedtls_sha256_starts(&sha, 0);
+
+  WiFiClient *stream = dl.getStreamPtr();
+  uint8_t buf[1024];
+  int written = 0;
+  int lastShownPercent = -1;
+  unsigned long lastByteAt = millis();
+  while (dl.connected() && (total < 0 || written < total)) {
+    const size_t avail = stream->available();
+    if (avail) {
+      const size_t toRead = avail > sizeof(buf) ? sizeof(buf) : avail;
+      const size_t r = stream->readBytes(buf, toRead);
+      if (r == 0) break;
+      Update.write(buf, r);
+      mbedtls_sha256_update(&sha, buf, r);
+      written += r;
+      lastByteAt = millis();
+      if (total > 0) {
+        const int percent = (written * 100) / total;
+        if (percent != lastShownPercent) {
+          lastShownPercent = percent;
+          display.fillRect(0, 60, 200, 20, GxEPD_BLACK);
+          display.setCursor(0, 75);
+          display.print(percent);
+          display.println("%");
+          display.display(true); // partial refresh
+        }
+      }
+    } else {
+      if (millis() - lastByteAt > 15000) break; // stalled
+      delay(2);
+    }
+  }
+  dl.end();
+
+  uint8_t hash[32];
+  mbedtls_sha256_finish(&sha, hash);
+  mbedtls_sha256_free(&sha);
+
+  const bool sizeOk = (total <= 0) || (written == total);
+  bool digestOk = true;
+  if (digestHex.length() == 64) {
+    uint8_t expected[32];
+    for (int i = 0; i < 32; i++) {
+      expected[i] = (uint8_t)strtoul(digestHex.substring(i * 2, i * 2 + 2).c_str(), nullptr, 16);
+    }
+    digestOk = (memcmp(hash, expected, 32) == 0);
+  }
+
+  if (!sizeOk || !digestOk) {
+    Update.abort();
+    showResultAndReturn("Update verify", "failed - aborted.");
+    return;
+  }
+
+  if (!Update.end(true) || Update.hasError()) {
+    showResultAndReturn("Update failed", "while finalizing.");
+    return;
+  }
+
+  display.fillScreen(GxEPD_BLACK);
+  display.setCursor(0, 30);
+  display.println("Update verified.");
+  display.println("Rebooting...");
+  display.display(false);
+  delay(1000);
+  ESP.restart();
 }
 
 bool Watchy::connectWiFi() {
