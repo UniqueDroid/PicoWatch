@@ -347,6 +347,9 @@ void dispatchSettingsMenu(Watchy *w, int index) {
   case 7:
     w->setWeatherCity();
     break;
+  case 8:
+    w->showUpdateViaGithubPlaceholder();
+    break;
   default:
     break;
   }
@@ -569,13 +572,14 @@ void Watchy::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
 
   const char *settingsMenuItems[] = {"About Watchy", "Vibrate Motor", "Show Accelerometer",
                                       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-                                      "Sync NTP",     "Set Timezone", "Set City"};
+                                      "Sync NTP",     "Set Timezone", "Set City",
+                                      "Update via GitHub"};
   for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
-    yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
+    yPos = SETTINGS_MENU_ITEM_HEIGHT + (SETTINGS_MENU_ITEM_HEIGHT * i);
     display.setCursor(0, yPos);
     if (i == settingsMenuIndex) {
       display.getTextBounds(settingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+      display.fillRect(x1 - 1, y1 - 10, 200, h + 12, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
       display.println(settingsMenuItems[i]);
     } else {
@@ -601,13 +605,14 @@ void Watchy::showFastSettingsMenu(byte settingsMenuIndex) {
 
   const char *settingsMenuItems[] = {"About Watchy", "Vibrate Motor", "Show Accelerometer",
                                       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-                                      "Sync NTP",     "Set Timezone", "Set City"};
+                                      "Sync NTP",     "Set Timezone", "Set City",
+                                      "Update via GitHub"};
   for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
-    yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
+    yPos = SETTINGS_MENU_ITEM_HEIGHT + (SETTINGS_MENU_ITEM_HEIGHT * i);
     display.setCursor(0, yPos);
     if (i == settingsMenuIndex) {
       display.getTextBounds(settingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+      display.fillRect(x1 - 1, y1 - 10, 200, h + 12, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
       display.println(settingsMenuItems[i]);
     } else {
@@ -1026,6 +1031,27 @@ void Watchy::showAbout() {
   }else{
     display.println("WiFi Not Connected");
   }
+  display.display(false); // full refresh
+
+  guiState = APP_STATE;
+}
+
+// Step 1 of re-adding the WiFi/Update feature in isolated, individually
+// testable pieces (see project memory - the full feature caused an
+// unexplained menu/display regression and was fully reverted). This is a
+// placeholder for the real GitHub-update flow, deliberately using ONLY
+// existing display APIs (no new #includes, no WebServer/WiFiClientSecure/
+// Update/mbedtls) so this step tests just the settings-menu item bump in
+// isolation.
+void Watchy::showUpdateViaGithubPlaceholder() {
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setTextColor(GxEPD_WHITE);
+  display.setCursor(0, 30);
+  display.println("Update via GitHub");
+  display.println(" ");
+  display.println("Coming soon.");
   display.display(false); // full refresh
 
   guiState = APP_STATE;

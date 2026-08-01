@@ -103,6 +103,9 @@ public:
   void setWeatherCity(); // interactive 7-digit OpenWeatherMap city ID picker, persisted in flash (NVS)
   void setupWifi();
   bool connectWiFi();
+  // Step 1 placeholder for the WiFi/Update rework - see Watchy.cpp for why
+  // this is being reintroduced in isolated, individually-testable pieces.
+  void showUpdateViaGithubPlaceholder();
   weatherData getWeatherData();
   void updateFWBegin();
 
