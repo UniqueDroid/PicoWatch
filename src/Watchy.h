@@ -6,6 +6,12 @@
 #include <HTTPClient.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+// Step 2/5 of re-adding the WiFi/Update feature in isolation - these three
+// are pulled in now but not used by any code yet, to test whether merely
+// linking them (before WiFiManager is even removed) affects anything.
+#include <WebServer.h>
+#include <WiFiClientSecure.h>
+#include <Update.h>
 #include <Arduino_JSON.h>
 #include <GxEPD2_BW.h>
 #include <Wire.h>

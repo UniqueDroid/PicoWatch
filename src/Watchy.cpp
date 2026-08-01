@@ -1,5 +1,6 @@
 #include "Watchy.h"
 #include <Preferences.h>
+#include <mbedtls/sha256.h> // step 2/5 - linked but unused so far, see Watchy.h
 
 // Cached copy of the persisted alarm (see setAlarm()/onReset()) - survives
 // deep sleep like guiState/menuIndex; loaded from flash once on reset rather
