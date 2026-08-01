@@ -113,6 +113,7 @@ public:
   void showStopwatch();
   void showStepsHistory();
   void setAlarm(); // Hour/Minute/Enabled picker, persisted in flash (NVS)
+  void showWeatherForecast(); // 5-day forecast via OpenWeatherMap's free /forecast endpoint
 
   void showWatchFace(bool partialRefresh);
   virtual void drawWatchFace(); // override this method for different watch

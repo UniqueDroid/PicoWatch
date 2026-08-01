@@ -91,6 +91,27 @@ void saveAlarm() {
   prefs.putBool(kPrefsAlarmEnabledKey, alarmEnabled);
   prefs.end();
 }
+
+// Same weather-condition-code ranges as draw7SegWeather() in the AllFaces
+// example (https://openweathermap.org/weather-conditions), just labelled
+// text instead of an icon bitmap.
+const char *weatherConditionLabel(int code) {
+  if (code > 801) return "Cloudy";
+  if (code == 801) return "Few Clouds";
+  if (code == 800) return "Clear";
+  if (code >= 700) return "Haze";
+  if (code >= 600) return "Snow";
+  if (code >= 500) return "Rain";
+  if (code >= 300) return "Drizzle";
+  if (code >= 200) return "Storm";
+  return "?";
+}
+
+struct DayForecastEntry {
+  char date[11] = ""; // "YYYY-MM-DD"
+  int temp = 0;
+  int conditionCode = 0;
+};
 }  // namespace
 
 #ifdef ARDUINO_ESP32S3_DEV
@@ -255,6 +276,9 @@ void dispatchTopMenu(Watchy *w, int index) {
     w->setAlarm();
     break;
   case 4:
+    w->showWeatherForecast();
+    break;
+  case 5:
     w->showSettingsMenu(settingsMenuIndex, false);
     break;
   default:
@@ -449,7 +473,7 @@ void Watchy::showMenu(byte menuIndex, bool partialRefresh) {
   uint16_t w, h;
   int16_t yPos;
 
-  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Alarm", "Settings"};
+  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Alarm", "Weather (5 Days)", "Settings"};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -479,7 +503,7 @@ void Watchy::showFastMenu(byte menuIndex) {
   uint16_t w, h;
   int16_t yPos;
 
-  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Alarm", "Settings"};
+  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Alarm", "Weather (5 Days)", "Settings"};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -820,6 +844,105 @@ void Watchy::setAlarm() {
   alarmMinute = minute;
   alarmEnabled = enabled;
   saveAlarm();
+
+  showMenu(menuIndex, false);
+}
+
+void Watchy::showWeatherForecast() {
+  guiState = APP_STATE;
+
+  static constexpr int kForecastDays = 5;
+  DayForecastEntry days[kForecastDays];
+  int dayCount = 0;
+  bool fetchOk = false;
+
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setTextColor(GxEPD_WHITE);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(20, 30);
+  display.println("Loading...");
+  display.display(false); // full refresh
+
+  if (connectWiFi()) {
+    HTTPClient http;
+    http.setConnectTimeout(3000); // 3 second max timeout
+    // Free "5 Day / 3 Hour" forecast endpoint - same query-string shape as
+    // the current-weather URL (settings.weatherURL), just a different path,
+    // so the existing cityID/lat-lon template logic still applies.
+    String url = settings.weatherURL;
+    url.replace("data/2.5/weather", "data/2.5/forecast");
+    if (settings.cityID != "") {
+      url.replace("{cityID}", settings.cityID);
+    } else {
+      url.replace("{lat}", settings.lat);
+      url.replace("{lon}", settings.lon);
+    }
+    url.replace("{units}", settings.weatherUnit);
+    url.replace("{lang}", settings.weatherLang);
+    url.replace("{apiKey}", settings.weatherAPIKey);
+
+    http.begin(url.c_str());
+    const int httpResponseCode = http.GET();
+    if (httpResponseCode == 200) {
+      const String payload = http.getString();
+      JSONVar responseObject = JSON.parse(payload);
+      JSONVar list = responseObject["list"];
+      // Response is 3-hour steps ("dt_txt": "YYYY-MM-DD HH:MM:SS"); take one
+      // reading per calendar date, preferring the one closest to midday once
+      // it shows up so the temperature is roughly representative of the day.
+      for (int i = 0; i < list.length() && dayCount < kForecastDays; i++) {
+        const char *dtTxt = (const char *)list[i]["dt_txt"];
+        char date[11];
+        strncpy(date, dtTxt, 10);
+        date[10] = '\0';
+        const int hour = atoi(dtTxt + 11);
+
+        const bool isNewDay = dayCount == 0 || strcmp(date, days[dayCount - 1].date) != 0;
+        if (isNewDay) {
+          strncpy(days[dayCount].date, date, sizeof(days[dayCount].date) - 1);
+          days[dayCount].date[sizeof(days[dayCount].date) - 1] = '\0';
+          days[dayCount].temp = (int)list[i]["main"]["temp"];
+          days[dayCount].conditionCode = (int)list[i]["weather"][0]["id"];
+          dayCount++;
+        } else if (hour == 12) {
+          days[dayCount - 1].temp = (int)list[i]["main"]["temp"];
+          days[dayCount - 1].conditionCode = (int)list[i]["weather"][0]["id"];
+        }
+      }
+      fetchOk = dayCount > 0;
+    }
+    http.end();
+    // turn off radios
+    WiFi.mode(WIFI_OFF);
+    btStop();
+  }
+
+  display.fillScreen(GxEPD_BLACK);
+  display.setCursor(5, 25);
+  display.println(fetchOk ? "Weather - 5 Days" : "Forecast failed");
+  if (fetchOk) {
+    const char unitLetter = settings.weatherUnit == String("metric") ? 'C' : 'F';
+    for (int i = 0; i < dayCount; i++) {
+      display.setCursor(5, 55 + i * 28);
+      char buf[40];
+      // days[i].date is "YYYY-MM-DD" - "+5" skips the year, showing "MM-DD".
+      snprintf(buf, sizeof(buf), "%s  %3d%c  %s", days[i].date + 5, days[i].temp, unitLetter,
+               weatherConditionLabel(days[i].conditionCode));
+      display.println(buf);
+    }
+  } else {
+    display.setCursor(5, 60);
+    display.println("Check WiFi and the");
+    display.println("weather API key.");
+  }
+  display.display(false); // full refresh
+
+  pinMode(BACK_BTN_PIN, INPUT);
+  while (digitalRead(BACK_BTN_PIN) != ACTIVE_LOW) {
+    delay(50);
+  }
+  while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10); // wait for release
 
   showMenu(menuIndex, false);
 }

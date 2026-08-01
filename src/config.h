@@ -101,7 +101,7 @@
 #define FW_UPDATE_STATE     2
 #define SETTINGS_MENU_STATE 3
 #define MENU_HEIGHT     25
-#define MENU_LENGTH     5           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Settings
+#define MENU_LENGTH     6           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Weather, Settings
 #define SETTINGS_MENU_LENGTH 7      // About, Vibrate, Accelerometer, Set Time, WiFi, Sync NTP, Set Timezone
 // alarm (Watchy::setAlarm())
 #define SET_ALARM_HOUR    0
