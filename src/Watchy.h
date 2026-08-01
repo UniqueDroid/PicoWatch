@@ -112,6 +112,7 @@ public:
   // run inside 7_SEG's own draw method).
   void showStopwatch();
   void showStepsHistory();
+  void setAlarm(); // Hour/Minute/Enabled picker, persisted in flash (NVS)
 
   void showWatchFace(bool partialRefresh);
   virtual void drawWatchFace(); // override this method for different watch
@@ -150,6 +151,9 @@ private:
 extern RTC_DATA_ATTR int guiState;
 extern RTC_DATA_ATTR int menuIndex;
 extern RTC_DATA_ATTR int settingsMenuIndex;
+extern RTC_DATA_ATTR uint8_t alarmHour;
+extern RTC_DATA_ATTR uint8_t alarmMinute;
+extern RTC_DATA_ATTR bool alarmEnabled;
 extern RTC_DATA_ATTR BMA423 sensor;
 extern RTC_DATA_ATTR bool WIFI_CONFIGURED;
 extern RTC_DATA_ATTR bool BLE_CONFIGURED;

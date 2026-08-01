@@ -1,6 +1,14 @@
 #include "Watchy.h"
 #include <Preferences.h>
 
+// Cached copy of the persisted alarm (see setAlarm()/onReset()) - survives
+// deep sleep like guiState/menuIndex; loaded from flash once on reset rather
+// than re-reading NVS every single per-minute tick. Declared here (ahead of
+// the anonymous namespace below) since loadAlarm()/saveAlarm() reference it.
+RTC_DATA_ATTR uint8_t alarmHour;
+RTC_DATA_ATTR uint8_t alarmMinute;
+RTC_DATA_ATTR bool alarmEnabled;
+
 namespace {
 // Manual timezone override, persisted in flash (NVS) so it survives power
 // loss, not just deep sleep (unlike the RTC_DATA_ATTR globals below). Once
@@ -61,6 +69,28 @@ void loadStepsHistory(int32_t (&history)[kStepsHistoryDays]) {
     for (int i = 0; i < kStepsHistoryDays; i++) history[i] = 0;
   }
 }
+
+constexpr const char *kPrefsAlarmHourKey = "alarmH";
+constexpr const char *kPrefsAlarmMinuteKey = "alarmM";
+constexpr const char *kPrefsAlarmEnabledKey = "alarmOn";
+
+void loadAlarm() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  alarmHour = prefs.getUChar(kPrefsAlarmHourKey, 7);
+  alarmMinute = prefs.getUChar(kPrefsAlarmMinuteKey, 0);
+  alarmEnabled = prefs.getBool(kPrefsAlarmEnabledKey, false);
+  prefs.end();
+}
+
+void saveAlarm() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putUChar(kPrefsAlarmHourKey, alarmHour);
+  prefs.putUChar(kPrefsAlarmMinuteKey, alarmMinute);
+  prefs.putBool(kPrefsAlarmEnabledKey, alarmEnabled);
+  prefs.end();
+}
 }  // namespace
 
 #ifdef ARDUINO_ESP32S3_DEV
@@ -117,6 +147,9 @@ void Watchy::init(String datetime) {
         }
       }
       _captureStepsAtMidnight();
+      if (alarmEnabled && currentTime.Hour == alarmHour && currentTime.Minute == alarmMinute) {
+        vibMotor(150, 10); // longer/more pulses than the o'clock vibration, so it's distinguishable
+      }
       break;
     case MAIN_MENU_STATE:
       // Return to watchface if in menu for more than one tick
@@ -154,6 +187,7 @@ void Watchy::init(String datetime) {
       long manualOffset;
       gmtOffset = loadManualGmtOffset(manualOffset) ? manualOffset : settings.gmtOffset;
     }
+    loadAlarm();
     RTC.read(currentTime);
     RTC.read(bootTime);
     showWatchFace(false); // full update on reset
@@ -218,6 +252,9 @@ void dispatchTopMenu(Watchy *w, int index) {
     w->showStepsHistory();
     break;
   case 3:
+    w->setAlarm();
+    break;
+  case 4:
     w->showSettingsMenu(settingsMenuIndex, false);
     break;
   default:
@@ -412,7 +449,7 @@ void Watchy::showMenu(byte menuIndex, bool partialRefresh) {
   uint16_t w, h;
   int16_t yPos;
 
-  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Settings"};
+  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Alarm", "Settings"};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -442,7 +479,7 @@ void Watchy::showFastMenu(byte menuIndex) {
   uint16_t w, h;
   int16_t yPos;
 
-  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Settings"};
+  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Alarm", "Settings"};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -599,18 +636,35 @@ void Watchy::showStopwatch() {
       lastShownSecond = totalSeconds;
       display.fillScreen(GxEPD_BLACK);
       display.setTextColor(GxEPD_WHITE);
+
       display.setFont(&FreeMonoBold9pt7b);
-      display.setCursor(20, 60);
+      display.setCursor(20, 25);
       display.println("Stopwatch");
 
-      char buf[16];
       const unsigned long hh = totalSeconds / 3600;
       const unsigned long mm = (totalSeconds % 3600) / 60;
       const unsigned long ss = totalSeconds % 60;
-      snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu", hh, mm, ss);
-      display.setCursor(30, 110);
+
+      // Big MM:SS in the same font/size the default watchface uses for
+      // HH:MM (guaranteed to fit the 200px width) - hours only shown as a
+      // small prefix above when the stopwatch has actually run that long,
+      // since cramming HH:MM:SS into one line at this font size would run
+      // off the right edge.
+      if (hh > 0) {
+        display.setFont(&FreeMonoBold9pt7b);
+        char hbuf[8];
+        snprintf(hbuf, sizeof(hbuf), "%luh", hh);
+        display.setCursor(5, 60);
+        display.println(hbuf);
+      }
+
+      char buf[8];
+      snprintf(buf, sizeof(buf), "%02lu:%02lu", mm, ss);
+      display.setFont(&DSEG7_Classic_Bold_53);
+      display.setCursor(5, 53 + 60);
       display.println(buf);
 
+      display.setFont(&FreeMonoBold9pt7b);
       display.setCursor(20, 160);
       display.println(running ? "Menu: Stop" : "Menu: Start");
       if (!running) {
@@ -653,6 +707,119 @@ void Watchy::showStepsHistory() {
     delay(50);
   }
   while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10); // wait for release
+
+  showMenu(menuIndex, false);
+}
+
+void Watchy::setAlarm() {
+  guiState = APP_STATE;
+
+  uint8_t hour = alarmHour;
+  uint8_t minute = alarmMinute;
+  bool enabled = alarmEnabled;
+
+  int8_t setIndex = SET_ALARM_HOUR;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  // Same button-bounce hazard as setTimezone()/showStopwatch(): Menu was
+  // just used to select "Alarm" from the menu, and (unlike Set Time's 5
+  // fields) only 3 fields separate that press from an accidental save+exit.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  while (1) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      setIndex++;
+      if (setIndex > SET_ALARM_ENABLED) {
+        break;
+      }
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      if (setIndex != SET_ALARM_HOUR) {
+        setIndex--;
+      }
+    }
+
+    blink = 1 - blink;
+
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      switch (setIndex) {
+      case SET_ALARM_HOUR:
+        hour == 23 ? (hour = 0) : hour++;
+        break;
+      case SET_ALARM_MINUTE:
+        minute == 59 ? (minute = 0) : minute++;
+        break;
+      case SET_ALARM_ENABLED:
+        enabled = !enabled;
+        break;
+      default:
+        break;
+      }
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      switch (setIndex) {
+      case SET_ALARM_HOUR:
+        hour == 0 ? (hour = 23) : hour--;
+        break;
+      case SET_ALARM_MINUTE:
+        minute == 0 ? (minute = 59) : minute--;
+        break;
+      case SET_ALARM_ENABLED:
+        enabled = !enabled;
+        break;
+      default:
+        break;
+      }
+    }
+
+    display.fillScreen(GxEPD_BLACK);
+    display.setTextColor(GxEPD_WHITE);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(20, 25);
+    display.println("Alarm");
+
+    display.setCursor(5, 80);
+    if (setIndex == SET_ALARM_HOUR) {
+      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    }
+    if (hour < 10) display.print("0");
+    display.print(hour);
+
+    display.setTextColor(GxEPD_WHITE);
+    display.print(":");
+
+    if (setIndex == SET_ALARM_MINUTE) {
+      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    }
+    if (minute < 10) display.print("0");
+    display.println(minute);
+
+    display.setTextColor(GxEPD_WHITE);
+    display.setCursor(5, 140);
+    display.print("Enabled: ");
+    if (setIndex == SET_ALARM_ENABLED) {
+      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    }
+    display.println(enabled ? "Yes" : "No");
+
+    display.display(true); // partial refresh
+  }
+
+  alarmHour = hour;
+  alarmMinute = minute;
+  alarmEnabled = enabled;
+  saveAlarm();
 
   showMenu(menuIndex, false);
 }
