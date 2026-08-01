@@ -2,12 +2,10 @@
 #define WATCHY_H
 
 #include <Arduino.h>
+#include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
-#include <WebServer.h>
-#include <WiFiClientSecure.h>
-#include <Update.h>
 #include <Arduino_JSON.h>
 #include <GxEPD2_BW.h>
 #include <Wire.h>
@@ -103,22 +101,10 @@ public:
   void setTime();
   void setTimezone(); // interactive GMT offset picker, persisted in flash (NVS) - see Watchy.cpp
   void setWeatherCity(); // interactive 7-digit OpenWeatherMap city ID picker, persisted in flash (NVS)
-  // Reworked from the stock WiFiManager captive portal: reconnects with
-  // saved credentials first; on failure, brings up a SoftAP + join-form web
-  // page (auto-shuts down after WIFI_AP_TIMEOUT seconds with no client
-  // ever associating - see config.h). Once connected (either just now or
-  // already), serves the same web UI's status/File-Update/GitHub-Update
-  // page until the user backs out or it idles out.
   void setupWifi();
   bool connectWiFi();
   weatherData getWeatherData();
   void updateFWBegin();
-  // Checks this repo's latest GitHub release and, if newer than the running
-  // firmware, downloads + flashes GITHUB_OTA_ASSET_NAME (SHA256-verified
-  // against the release asset's digest) and reboots. Blocking, shows
-  // progress on the e-ink display. Shared by the Settings menu's "Update via
-  // GitHub" item and the web UI's "GitHub Update" button.
-  void updateFromGithub();
 
   // Top-level Stopwatch and Steps (Last 7 Days) apps - generic, not
   // per-watchface, so implemented directly here rather than as virtual
@@ -155,6 +141,7 @@ private:
   // Called once per minute from init()'s WATCHFACE_STATE tick handler,
   // regardless of which watchface is active.
   void _captureStepsAtMidnight();
+  static void _configModeCallback(WiFiManager *myWiFiManager);
   static uint16_t _readRegister(uint8_t address, uint8_t reg, uint8_t *data,
                                 uint16_t len);
   static uint16_t _writeRegister(uint8_t address, uint8_t reg, uint8_t *data,

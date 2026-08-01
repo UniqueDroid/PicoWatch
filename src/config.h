@@ -92,17 +92,8 @@
 #define DISPLAY_WIDTH 200
 #define DISPLAY_HEIGHT 200
 // wifi
-#define WIFI_AP_TIMEOUT 60          // seconds with zero AP clients connected before the setup AP auto-shuts-down
+#define WIFI_AP_TIMEOUT 60
 #define WIFI_AP_SSID    "Watchy AP"
-#define WIFI_WEBSERVER_IDLE_TIMEOUT 300  // seconds of no HTTP request before the post-connect web UI auto-exits
-// GitHub OTA update (Settings -> "Update via GitHub", and the WiFi web UI's
-// "GitHub Update" button both call Watchy::updateFromGithub(), which checks
-// this repo's latest release and downloads this asset by exact name).
-#define GITHUB_OTA_OWNER "UniqueDroid"
-#define GITHUB_OTA_REPO  "PicoWatch"
-#ifndef GITHUB_OTA_ASSET_NAME
-#define GITHUB_OTA_ASSET_NAME "AllFaces.ino-v30.bin"
-#endif
 // menu
 #define WATCHFACE_STATE     -1
 #define MAIN_MENU_STATE     0
@@ -111,8 +102,7 @@
 #define SETTINGS_MENU_STATE 3
 #define MENU_HEIGHT     25
 #define MENU_LENGTH     6           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Weather, Settings
-#define SETTINGS_MENU_LENGTH 9      // About, Vibrate, Accelerometer, Set Time, WiFi, Sync NTP, Set Timezone, Set City, Update via GitHub
-#define SETTINGS_MENU_ITEM_HEIGHT 22  // tighter than MENU_HEIGHT so all 9 rows still fit within DISPLAY_HEIGHT (200px)
+#define SETTINGS_MENU_LENGTH 8      // About, Vibrate, Accelerometer, Set Time, WiFi, Sync NTP, Set Timezone, Set City
 // alarm (Watchy::setAlarm())
 #define SET_ALARM_HOUR    0
 #define SET_ALARM_MINUTE  1

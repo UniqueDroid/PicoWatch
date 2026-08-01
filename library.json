@@ -27,6 +27,10 @@
     {
       "name": "GxEPD2",
       "version": "https://github.com/ZinggJM/GxEPD2.git#master"
+    },
+    {
+      "name": "WiFiManager",
+      "version": "https://github.com/tzapu/WiFiManager.git#master"
     }
   ]
 }
