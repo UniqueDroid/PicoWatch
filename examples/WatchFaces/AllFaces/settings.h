@@ -14,7 +14,14 @@
     #define OPENWEATHERMAP_URL "http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&lang={lang}&units={units}&appid={apiKey}" //open weather api using lat lon
 #endif
 
-#define OPENWEATHERMAP_APIKEY "f058fe1cad2afe8e2ddc5d063a64cecb" //use your own API key :)
+// Real API key lives in settings_secrets.h (gitignored, not committed) so it
+// never ends up in git history - see that file / the README for setup.
+// Falls back to OpenWeatherMap's public, rate-limited demo key otherwise.
+#if __has_include("settings_secrets.h")
+    #include "settings_secrets.h"
+#else
+    #define OPENWEATHERMAP_APIKEY "f058fe1cad2afe8e2ddc5d063a64cecb"
+#endif
 #define TEMP_UNIT "metric" //metric = Celsius , imperial = Fahrenheit
 #define TEMP_LANG "en"
 #define WEATHER_UPDATE_INTERVAL 30 //must be greater than 5, measured in minutes

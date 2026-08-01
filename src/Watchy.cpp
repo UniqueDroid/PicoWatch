@@ -9,6 +9,15 @@ RTC_DATA_ATTR uint8_t alarmHour;
 RTC_DATA_ATTR uint8_t alarmMinute;
 RTC_DATA_ATTR bool alarmEnabled;
 
+// Weather city ID actually used at runtime (OpenWeatherMap numeric ID, see
+// https://openweathermap.org/current#cityid) - defaults to settings.cityID
+// but can be overridden on-device via Watchy::setWeatherCity() without a
+// recompile. Can't just mutate settings.cityID directly: settings is a
+// regular (non-RTC) object member reconstructed from the compile-time
+// default on every wake from deep sleep, so an override stored there would
+// vanish after the very next sleep cycle.
+RTC_DATA_ATTR char weatherCityID[12];
+
 namespace {
 // Manual timezone override, persisted in flash (NVS) so it survives power
 // loss, not just deep sleep (unlike the RTC_DATA_ATTR globals below). Once
@@ -89,6 +98,28 @@ void saveAlarm() {
   prefs.putUChar(kPrefsAlarmHourKey, alarmHour);
   prefs.putUChar(kPrefsAlarmMinuteKey, alarmMinute);
   prefs.putBool(kPrefsAlarmEnabledKey, alarmEnabled);
+  prefs.end();
+}
+
+constexpr const char *kPrefsCityIdKey = "cityId";
+
+// Loads the saved city ID into weatherCityID, falling back to (and
+// persisting) the compile-time settings.cityID default the first time this
+// runs on a given device.
+void loadWeatherCityID(const String &defaultCityID) {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  String saved = prefs.getString(kPrefsCityIdKey, "");
+  prefs.end();
+  if (saved.length() == 0) saved = defaultCityID;
+  strncpy(weatherCityID, saved.c_str(), sizeof(weatherCityID) - 1);
+  weatherCityID[sizeof(weatherCityID) - 1] = '\0';
+}
+
+void saveWeatherCityID(const char *cityID) {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putString(kPrefsCityIdKey, cityID);
   prefs.end();
 }
 
@@ -209,6 +240,7 @@ void Watchy::init(String datetime) {
       gmtOffset = loadManualGmtOffset(manualOffset) ? manualOffset : settings.gmtOffset;
     }
     loadAlarm();
+    loadWeatherCityID(settings.cityID);
     RTC.read(currentTime);
     RTC.read(bootTime);
     showWatchFace(false); // full update on reset
@@ -311,6 +343,9 @@ void dispatchSettingsMenu(Watchy *w, int index) {
     break;
   case 6:
     w->setTimezone();
+    break;
+  case 7:
+    w->setWeatherCity();
     break;
   default:
     break;
@@ -534,7 +569,7 @@ void Watchy::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
 
   const char *settingsMenuItems[] = {"About Watchy", "Vibrate Motor", "Show Accelerometer",
                                       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-                                      "Sync NTP",     "Set Timezone"};
+                                      "Sync NTP",     "Set Timezone", "Set City"};
   for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -566,7 +601,7 @@ void Watchy::showFastSettingsMenu(byte settingsMenuIndex) {
 
   const char *settingsMenuItems[] = {"About Watchy", "Vibrate Motor", "Show Accelerometer",
                                       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-                                      "Sync NTP",     "Set Timezone"};
+                                      "Sync NTP",     "Set Timezone", "Set City"};
   for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
     yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
     display.setCursor(0, yPos);
@@ -872,8 +907,8 @@ void Watchy::showWeatherForecast() {
     // so the existing cityID/lat-lon template logic still applies.
     String url = settings.weatherURL;
     url.replace("data/2.5/weather", "data/2.5/forecast");
-    if (settings.cityID != "") {
-      url.replace("{cityID}", settings.cityID);
+    if (weatherCityID[0] != '\0') {
+      url.replace("{cityID}", weatherCityID);
     } else {
       url.replace("{lat}", settings.lat);
       url.replace("{lon}", settings.lon);
@@ -1252,6 +1287,108 @@ void Watchy::setTimezone() {
   showSettingsMenu(settingsMenuIndex, false);
 }
 
+void Watchy::setWeatherCity() {
+  guiState = APP_STATE;
+
+  static constexpr int kDigitCount = 7;
+  uint8_t digits[kDigitCount] = {0};
+  {
+    // Right-align the current city ID into the digit fields (e.g. "5128581"
+    // -> digits[0..6] = 5,1,2,8,5,8,1; a shorter ID is left-padded with 0).
+    const int len = strlen(weatherCityID);
+    for (int i = 0; i < len && i < kDigitCount; i++) {
+      const char c = weatherCityID[len - 1 - i];
+      digits[kDigitCount - 1 - i] = (c >= '0' && c <= '9') ? (c - '0') : 0;
+    }
+  }
+
+  int8_t setIndex = 0;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  // Same button-bounce hazard as the other "Menu confirms immediately"
+  // screens (setTimezone()/changeWatchface()/showStopwatch()) doesn't apply
+  // here in quite the same way (Menu just advances a digit, like Set Time),
+  // but a lingering press on entry would still skip straight past digit 0 -
+  // wait for a clean release to be safe.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  while (1) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      setIndex++;
+      if (setIndex > kDigitCount - 1) {
+        break;
+      }
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      if (setIndex != 0) {
+        setIndex--;
+      }
+    }
+
+    blink = 1 - blink;
+
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      digits[setIndex] = (digits[setIndex] + 1) % 10;
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      digits[setIndex] = (digits[setIndex] + 9) % 10;
+    }
+
+    display.fillScreen(GxEPD_BLACK);
+    display.setTextColor(GxEPD_WHITE);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(10, 25);
+    display.println("Set City ID");
+
+    for (int i = 0; i < kDigitCount; i++) {
+      display.setCursor(15 + i * 24, 90);
+      if (i == setIndex) {
+        display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+      } else {
+        display.setTextColor(GxEPD_WHITE);
+      }
+      display.print(digits[i]);
+    }
+
+    display.setTextColor(GxEPD_WHITE);
+    display.setCursor(5, 150);
+    display.println("Find your city ID at");
+    display.setCursor(5, 170);
+    display.println("openweathermap.org");
+    display.setCursor(5, 190);
+    display.println("/current#cityid");
+
+    display.display(true); // partial refresh
+  }
+
+  char buf[kDigitCount + 1];
+  for (int i = 0; i < kDigitCount; i++) buf[i] = '0' + digits[i];
+  buf[kDigitCount] = '\0';
+
+  // Strip leading zeros (but keep at least one digit) so the ID matches
+  // what OpenWeatherMap actually expects, e.g. "0005128581" -> "5128581".
+  char *trimmed = buf;
+  while (trimmed[0] == '0' && trimmed[1] != '\0') trimmed++;
+
+  strncpy(weatherCityID, trimmed, sizeof(weatherCityID) - 1);
+  weatherCityID[sizeof(weatherCityID) - 1] = '\0';
+  saveWeatherCityID(weatherCityID);
+  weatherIntervalCounter = -1; // force a fresh weather fetch for the new city
+
+  showSettingsMenu(settingsMenuIndex, false);
+}
+
 void Watchy::showAccelerometer() {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
@@ -1348,7 +1485,7 @@ void Watchy::drawWatchFace() {
 }
 
 weatherData Watchy::getWeatherData() {
-  return _getWeatherData(settings.cityID, settings.lat, settings.lon,
+  return _getWeatherData(weatherCityID, settings.lat, settings.lon,
     settings.weatherUnit, settings.weatherLang, settings.weatherURL,
     settings.weatherAPIKey, settings.weatherUpdateInterval);
 }

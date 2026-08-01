@@ -100,6 +100,7 @@ public:
   bool syncNTP(long gmt, String ntpServer);
   void setTime();
   void setTimezone(); // interactive GMT offset picker, persisted in flash (NVS) - see Watchy.cpp
+  void setWeatherCity(); // interactive 7-digit OpenWeatherMap city ID picker, persisted in flash (NVS)
   void setupWifi();
   bool connectWiFi();
   weatherData getWeatherData();

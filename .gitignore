@@ -68,3 +68,6 @@ manifest.mf
 nbbuild.xml
 nbproject
 .vscode
+
+# Personal API keys/credentials - never commit these, see settings.h
+settings_secrets.h
