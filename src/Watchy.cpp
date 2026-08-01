@@ -435,16 +435,6 @@ void Watchy::handleButtonPress() {
   pinMode(BACK_BTN_PIN, INPUT);
   pinMode(UP_BTN_PIN, INPUT);
   pinMode(DOWN_BTN_PIN, INPUT);
-  // The single-press handler above already acted on whichever button
-  // triggered this wake. If that finger is still down (quite possible - the
-  // partial e-ink refresh it just triggered can easily take longer than a
-  // normal press), the very first poll below would read the same button as
-  // ACTIVE_LOW and fire the same press a second time. Wait for a clean
-  // release first.
-  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW || digitalRead(BACK_BTN_PIN) == ACTIVE_LOW ||
-         digitalRead(UP_BTN_PIN) == ACTIVE_LOW || digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
-    delay(10);
-  }
   while (!timeout) {
     if (millis() - lastTimeout > 5000) {
       timeout = true;
@@ -460,13 +450,6 @@ void Watchy::handleButtonPress() {
         } /*else if (guiState == FW_UPDATE_STATE) {
           updateFWBegin();
         }*/
-        // Debounce: wait for release so one physical press can't be read as
-        // several (either because the finger is still down on the first
-        // poll right after the single-press handler above already acted, or
-        // from mechanical contact-bounce on release) - same fix pattern as
-        // setTimezone()/showStopwatch()/changeWatchface()/setWeatherCity(),
-        // just applied here too since this loop never had it.
-        while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) delay(10);
       } else if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
         lastTimeout = millis();
         if (guiState ==
@@ -481,7 +464,6 @@ void Watchy::handleButtonPress() {
         } else if (guiState == FW_UPDATE_STATE) {
           showSettingsMenu(settingsMenuIndex, false);
         }
-        while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
       } else if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
         lastTimeout = millis();
         if (guiState == MAIN_MENU_STATE) { // increment menu index
@@ -497,7 +479,6 @@ void Watchy::handleButtonPress() {
           }
           showFastSettingsMenu(settingsMenuIndex);
         }
-        while (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) delay(10);
       } else if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
         lastTimeout = millis();
         if (guiState == MAIN_MENU_STATE) { // decrement menu index
@@ -513,7 +494,6 @@ void Watchy::handleButtonPress() {
           }
           showFastSettingsMenu(settingsMenuIndex);
         }
-        while (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) delay(10);
       }
     }
   }
