@@ -1745,118 +1745,75 @@ void Watchy::_bmaConfig() {
 // join-page + AP-idle-timeout flow, WITHOUT File/GitHub Update yet (those
 // are steps 4-5) - see project memory for why this is being done piece by
 // piece instead of as one commit.
+namespace {
+// Same dark navy/cyan theme pfsense-status-esp32 layers on top of
+// WiFiManager's own default pages via setCustomHeadElement() - injected
+// after WiFiManager's stock <style> block, so equal-specificity rules here
+// win without needing !important. No logo (PicoWatch doesn't have one to
+// serve), just the color/shape theme - see project memory on reusing the
+// reference's design, not just its logic.
+constexpr const char *kWifiPortalTheme =
+    "<style>"
+    "body{background:radial-gradient(ellipse 900px 500px at 50% -10%,#0d2338,transparent) #070c13;"
+    "color:#e7f3fb;font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif}"
+    "h1,h2,h3{color:#e7f3fb}"
+    "a{color:#4fc3f7}a:hover{color:#7dd8fb}"
+    "input,select{background:#101823;border:1px solid #22303f;color:#e7f3fb;border-radius:10px;margin:8px 0}"
+    "button,input[type='button'],input[type='submit']{background:linear-gradient(135deg,#4fc3f7,#0f6fa8);"
+    "color:#0d1015;font-weight:600;border-radius:999px;margin:6px 0}"
+    "button.D{background:#dc3630;color:#fff}"
+    ".msg{background:#101823;border:1px solid #22303f;border-left-width:5px;border-radius:10px;color:#a9bcca}"
+    ".msg.P{border-left-color:#4fc3f7}.msg.D{border-left-color:#dc3630}.msg.S{border-left-color:#4ade80}"
+    "hr{border:none;border-top:1px solid #22303f;margin:18px 0}"
+    "</style>";
+}  // namespace
+
 void Watchy::setupWifi() {
   display.epd2.setBusyCallback(0); // temporarily disable lightsleep on busy
+  WiFiManager wifiManager;
+  wifiManager.resetSettings();
+  wifiManager.setTimeout(WIFI_AP_TIMEOUT);
+  wifiManager.setAPCallback(_configModeCallback);
+  wifiManager.setCustomHeadElement(kWifiPortalTheme);
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setTextColor(GxEPD_WHITE);
+  if (!wifiManager.autoConnect(WIFI_AP_SSID)) { // WiFi setup failed
+    display.println("Setup failed &");
+    display.println("timed out!");
+  } else {
+    display.println("Connected to:");
+    display.println(WiFi.SSID());
+		display.println("Local IP:");
+		display.println(WiFi.localIP());
+    weatherIntervalCounter = -1; // Reset to force weather to be read again
+    lastIPAddress = WiFi.localIP();
+    WiFi.SSID().toCharArray(lastSSID, 30);
+  }
+  display.display(false); // full refresh
+  // turn off radios
+  WiFi.mode(WIFI_OFF);
+  btStop();
+  // enable lightsleep on busy
+  display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
+  guiState = APP_STATE;
+}
+
+void Watchy::_configModeCallback(WiFiManager *myWiFiManager) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
   display.setTextColor(GxEPD_WHITE);
   display.setCursor(0, 30);
-  display.println("Connecting...");
-  display.display(false);
-
-  bool connected = connectWiFi(); // try saved credentials first
-  bool cancelled = false;
-  WebServer server(80);
-
-  if (!connected) {
-    // No saved/working credentials - bring up the setup AP + join page. Only
-    // active while this function runs (i.e. only after the user picks
-    // "Setup WiFi" from the Settings menu), and auto-shuts-down after
-    // WIFI_AP_TIMEOUT seconds if nobody ever connects to it.
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(WIFI_AP_SSID);
-
-    display.fillScreen(GxEPD_BLACK);
-    display.setCursor(0, 20);
-    display.println("Connect phone to:");
-    display.println(WIFI_AP_SSID);
-    display.println("Then open:");
-    display.println(WiFi.softAPIP());
-    display.println(" ");
-    display.println("Back to cancel");
-    display.display(false);
-
-    bool joinSubmitted = false;
-    String joinSsid, joinPass;
-
-    server.on("/", HTTP_GET, [&]() {
-      server.send(200, "text/html",
-                   "<!DOCTYPE html><html><body>"
-                   "<form method='POST' action='/join'>"
-                   "SSID: <input name='s' maxlength='32'><br/>"
-                   "Password: <input name='p' maxlength='64' type='password'><br/>"
-                   "<button type='submit'>Connect</button></form>"
-                   "</body></html>");
-    });
-    server.on("/join", HTTP_POST, [&]() {
-      joinSsid = server.arg("s");
-      joinPass = server.arg("p");
-      joinSubmitted = true;
-      server.send(200, "text/html", "<html><body>Connecting - check the watch display.</body></html>");
-    });
-    server.begin();
-
-    unsigned long lastStationSeen = millis();
-    while (!joinSubmitted) {
-      server.handleClient();
-      if (WiFi.softAPgetStationNum() > 0) {
-        lastStationSeen = millis(); // reset idle timer while a phone is associated
-      }
-      if (millis() - lastStationSeen > (unsigned long)WIFI_AP_TIMEOUT * 1000UL) {
-        break; // nobody ever joined the AP - shut it down
-      }
-      if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
-        cancelled = true;
-        break;
-      }
-      delay(20);
-    }
-    server.stop();
-
-    if (joinSubmitted) {
-      display.fillScreen(GxEPD_BLACK);
-      display.setCursor(0, 30);
-      display.println("Joining:");
-      display.println(joinSsid);
-      display.display(false);
-
-      WiFi.mode(WIFI_STA);
-      WiFi.begin(joinSsid.c_str(), joinPass.c_str());
-      unsigned long attemptStart = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - attemptStart < 15000) {
-        delay(200);
-      }
-      connected = (WiFi.status() == WL_CONNECTED);
-    }
-    WiFi.softAPdisconnect(true);
-  }
-
-  if (connected) {
-    WIFI_CONFIGURED = true;
-    weatherIntervalCounter = -1; // force a fresh weather fetch, may be on a new network
-    lastIPAddress = WiFi.localIP();
-    WiFi.SSID().toCharArray(lastSSID, 30);
-
-    display.fillScreen(GxEPD_BLACK);
-    display.setCursor(0, 20);
-    display.println("Connected to:");
-    display.println(lastSSID);
-    display.println("Local IP:");
-    display.println(WiFi.localIP());
-    display.display(false);
-  } else if (!cancelled) {
-    display.fillScreen(GxEPD_BLACK);
-    display.setCursor(0, 30);
-    display.println("Setup failed");
-    display.println("or timed out.");
-    display.display(false);
-  }
-
-  WiFi.mode(WIFI_OFF);
-  btStop();
-  display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
-  guiState = APP_STATE;
+  display.println("Connect to");
+  display.print("SSID: ");
+  display.println(WIFI_AP_SSID);
+  display.print("IP: ");
+  display.println(WiFi.softAPIP());
+	display.println("MAC address:");
+	display.println(WiFi.softAPmacAddress().c_str());
+  display.display(false); // full refresh
 }
 
 bool Watchy::connectWiFi() {
