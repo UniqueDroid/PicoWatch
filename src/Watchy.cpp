@@ -1784,6 +1784,12 @@ void Watchy::setupWifi() {
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
   display.setTextColor(GxEPD_WHITE);
+  // Missing in the stock code: without this, text prints wherever the
+  // cursor was left by whatever screen ran right before this one (e.g. the
+  // Settings menu, whose last row can leave the cursor near/past the
+  // bottom edge) - looks like a blank/black screen since nothing visible
+  // gets drawn. Every other screen in this file sets this explicitly.
+  display.setCursor(0, 30);
   if (!wifiManager.autoConnect(WIFI_AP_SSID)) { // WiFi setup failed
     display.println("Setup failed &");
     display.println("timed out!");
