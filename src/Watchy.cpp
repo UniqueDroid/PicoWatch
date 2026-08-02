@@ -1766,6 +1766,28 @@ constexpr const char *kWifiPortalTheme =
     ".msg.P{border-left-color:#4fc3f7}.msg.D{border-left-color:#dc3630}.msg.S{border-left-color:#4ade80}"
     "hr{border:none;border-top:1px solid #22303f;margin:18px 0}"
     "</style>";
+
+// Wraps a status/update page body in the same theme, for the small
+// WebServer that runs once WiFi Setup is actually connected (step 4/5 of
+// re-adding this feature - see project memory).
+String themedPage(const String &title, const String &bodyHtml) {
+  String html;
+  html.reserve(bodyHtml.length() + 400);
+  html += "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+          "<meta name='viewport' content='width=device-width,initial-scale=1,user-scalable=no'/>"
+          "<title>";
+  html += title;
+  html += "</title>";
+  html += kWifiPortalTheme;
+  html += "</head><body style='text-align:center'>"
+          "<div style='display:inline-block;text-align:left;min-width:260px;max-width:500px'>"
+          "<h1>PicoWatch</h1><h3>";
+  html += title;
+  html += "</h3>";
+  html += bodyHtml;
+  html += "</div></body></html>";
+  return html;
+}
 }  // namespace
 
 void Watchy::setupWifi() {
@@ -1809,17 +1831,60 @@ void Watchy::setupWifi() {
 
   if (connected) {
     // Keep the connection (and IP) actually reachable for a while instead
-    // of tearing it straight back down - otherwise the display still says
+    // of tearing it straight back down, and serve a small status/File
+    // Update page while it's up - otherwise the display still says
     // "Connected to..." but the radio is already off underneath it, so
-    // pinging the shown IP only works for the couple of seconds before
-    // this point. Exits early on Back, or after WIFI_STAY_CONNECTED_TIMEOUT
-    // seconds of nobody touching it.
+    // pinging/browsing the shown IP only worked for the couple of seconds
+    // before this point. Exits early on Back, or after
+    // WIFI_STAY_CONNECTED_TIMEOUT seconds of nobody touching it.
     pinMode(BACK_BTN_PIN, INPUT);
+    WebServer server(80);
+
+    server.on("/", HTTP_GET, [&]() {
+      String body = "<div class='msg S'><strong>Connected</strong> to " + String(lastSSID) + "</div>"
+                    "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
+                    "<input type='file' name='update' accept='.bin'>"
+                    "<button type='submit'>Upload &amp; Flash</button></form>";
+      server.send(200, "text/html", themedPage("PicoWatch", body));
+    });
+    server.on(
+        "/file-update", HTTP_POST,
+        [&]() {
+          server.sendHeader("Connection", "close");
+          const bool ok = !Update.hasError();
+          server.send(200, "text/html",
+                      themedPage("File Update",
+                                 ok ? "<div class='msg S'><strong>Update OK</strong><br/>Rebooting&hellip;</div>"
+                                    : "<div class='msg D'><strong>Update failed.</strong></div>"));
+          if (ok) {
+            delay(500);
+            ESP.restart();
+          }
+        },
+        [&]() {
+          HTTPUpload &upload = server.upload();
+          if (upload.status == UPLOAD_FILE_START) {
+            display.fillScreen(GxEPD_BLACK);
+            display.setCursor(0, 30);
+            display.println("Receiving update");
+            display.println("via File Update...");
+            display.display(false);
+            Update.begin(UPDATE_SIZE_UNKNOWN);
+          } else if (upload.status == UPLOAD_FILE_WRITE) {
+            Update.write(upload.buf, upload.currentSize);
+          } else if (upload.status == UPLOAD_FILE_END) {
+            Update.end(true);
+          }
+        });
+    server.begin();
+
     unsigned long connectedAt = millis();
     while (millis() - connectedAt < (unsigned long)WIFI_STAY_CONNECTED_TIMEOUT * 1000UL) {
+      server.handleClient();
       if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) break;
-      delay(50);
+      delay(10);
     }
+    server.stop();
   }
 
   // turn off radios
