@@ -29,7 +29,7 @@
 #define NTP_SERVER "pool.ntp.org"
 #define GMT_OFFSET_SEC 3600 * -5 //New York is UTC -5 EST, -4 EDT, will be overwritten by weather data
 
-watchySettings settings{
+picowatchSettings settings{
     #ifdef CITY_ID
         .cityID = CITY_ID,
     #else

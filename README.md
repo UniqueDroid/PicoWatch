@@ -1,18 +1,7 @@
-# Watchy - Fully Open Source E-Paper Watch
+# PicoWatch - E-Paper Watch Firmware
 
-![Watchy](https://watchy.sqfmi.com/img/watchy_render.png)
+PicoWatch is Jan's personal fork of [SQFMI's Watchy](https://github.com/sqfmi/Watchy), an open source E-Paper watch, adapted for a custom PCB V3 (ESP32-S3) build with additional features (combined watchfaces, stopwatch, alarm, weather forecast, WiFi setup, and firmware updates via the web or GitHub releases).
 
-**Buy Watchy from [Mouser](https://www.mouser.com/ProductDetail/SQFMI/SQFMI-WATCHY-10?qs=DRkmTr78QARN9VSJRzqRxw%3D%3D), [The Pi Hut](https://thepihut.com/collections/sqfmi), and [Crowd Supply](https://www.crowdsupply.com/sqfmi/watchy)**
-
-[**Watchy Case & Accessories**](https://shop.sqfmi.com)
-
-## Getting Started Guide
-Follow the instructions here https://watchy.sqfmi.com/docs/getting-started
+For hardware purchase, case/accessories, and the original getting-started guide, see the upstream project at [watchy.sqfmi.com](https://watchy.sqfmi.com).
 
 ### Have Fun! :)
-
-### Got Questions?
-
-Join our [Discord](https://discord.gg/ZXDegGV8E7)
-
-

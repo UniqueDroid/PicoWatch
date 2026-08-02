@@ -1,4 +1,4 @@
-#include "MultiFaceWatchy.h"
+#include "MultiFacePicoWatch.h"
 
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include <Fonts/FreeSansBold9pt7b.h>
@@ -17,25 +17,25 @@
 #include "Px437_IBM_BIOS5pt7b.h"
 #include "Seven_Segment10pt7b.h"
 
-// Watchy.cpp defines this the same way, but only for its own translation
+// PicoWatch.cpp defines this the same way, but only for its own translation
 // unit - AllFaces builds exclusively for V3 (ARDUINO_ESP32S3_DEV), so this
 // always matches.
 #define ACTIVE_LOW 0
 
-// Persists across deep sleep like guiState/menuIndex (declared in Watchy.cpp).
+// Persists across deep sleep like guiState/menuIndex (declared in PicoWatch.cpp).
 RTC_DATA_ATTR int selectedFace = 0;
 
 namespace {
-constexpr const char *kFaceNames[MultiFaceWatchy::FACE_COUNT] = {
+constexpr const char *kFaceNames[MultiFacePicoWatch::FACE_COUNT] = {
     "Basic", "7 Segment", "DOS", "MacPaint", "Mario", "Pokemon", "Starry Horizon", "Tetris"};
 
 // Persisted in flash (NVS) so a reset doesn't silently revert to face 0 -
-// same "watchy" namespace Watchy.cpp's setTimezone() uses, different key.
-constexpr const char *kPrefsNamespace = "watchy";
+// same "picowatch" namespace PicoWatch.cpp's setTimezone() uses, different key.
+constexpr const char *kPrefsNamespace = "picowatch";
 constexpr const char *kPrefsFaceKey = "face";
 }  // namespace
 
-void MultiFaceWatchy::onReset() {
+void MultiFacePicoWatch::onReset() {
   Preferences prefs;
   prefs.begin(kPrefsNamespace, true);  // read-only
   selectedFace = prefs.getInt(kPrefsFaceKey, 0);
@@ -52,7 +52,7 @@ void saveSelectedFace(int face) {
 }
 }  // namespace
 
-void MultiFaceWatchy::changeWatchface() {
+void MultiFacePicoWatch::changeWatchface() {
   guiState = APP_STATE;
 
   int pick = selectedFace;
@@ -62,7 +62,7 @@ void MultiFaceWatchy::changeWatchface() {
   pinMode(MENU_BTN_PIN, INPUT);
   pinMode(BACK_BTN_PIN, INPUT);
 
-  // Same button-bounce hazard as Watchy::setTimezone(): Menu here confirms
+  // Same button-bounce hazard as PicoWatch::setTimezone(): Menu here confirms
   // immediately, and it's the very button that was just pressed to select
   // "Change Watchface" from the main menu.
   while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
@@ -117,7 +117,7 @@ void MultiFaceWatchy::changeWatchface() {
   }
 }
 
-void MultiFaceWatchy::drawWatchFace() {
+void MultiFacePicoWatch::drawWatchFace() {
   switch (selectedFace) {
     case 0:
       drawBasic();
@@ -150,9 +150,9 @@ void MultiFaceWatchy::drawWatchFace() {
   }
 }
 
-// ---- Basic (library default look, ported from Watchy::drawWatchFace()) ----
+// ---- Basic (library default look, ported from PicoWatch::drawWatchFace()) ----
 
-void MultiFaceWatchy::drawBasic() {
+void MultiFacePicoWatch::drawBasic() {
   display.setFont(&DSEG7_Classic_Bold_53);
   display.setCursor(5, 53 + 60);
   if (currentTime.Hour < 10) {
@@ -166,7 +166,7 @@ void MultiFaceWatchy::drawBasic() {
   display.println(currentTime.Minute);
 }
 
-// ---- 7_SEG (ported from Watchy_7_SEG.cpp) ----
+// ---- 7_SEG (ported from PicoWatch_7_SEG.cpp) ----
 
 namespace {
 constexpr bool k7SegDarkMode = true;
@@ -177,7 +177,7 @@ constexpr uint8_t k7SegWeatherIconWidth = 48;
 constexpr uint8_t k7SegWeatherIconHeight = 32;
 }  // namespace
 
-void MultiFaceWatchy::draw7Seg() {
+void MultiFacePicoWatch::draw7Seg() {
   using namespace face7seg;
   display.fillScreen(k7SegDarkMode ? GxEPD_BLACK : GxEPD_WHITE);
   display.setTextColor(k7SegDarkMode ? GxEPD_WHITE : GxEPD_BLACK);
@@ -197,7 +197,7 @@ void MultiFaceWatchy::draw7Seg() {
 #endif
 }
 
-void MultiFaceWatchy::draw7SegTime() {
+void MultiFacePicoWatch::draw7SegTime() {
   display.setFont(&DSEG7_Classic_Bold_53);
   display.setCursor(5, 53 + 5);
   int displayHour;
@@ -217,7 +217,7 @@ void MultiFaceWatchy::draw7SegTime() {
   display.println(currentTime.Minute);
 }
 
-void MultiFaceWatchy::draw7SegDate() {
+void MultiFacePicoWatch::draw7SegDate() {
   display.setFont(&Seven_Segment10pt7b);
 
   int16_t x1, y1;
@@ -246,18 +246,18 @@ void MultiFaceWatchy::draw7SegDate() {
   display.println(tmYearToCalendar(currentTime.Year));  // offset from 1970, since year is stored in uint8_t
 }
 
-void MultiFaceWatchy::draw7SegSteps() {
+void MultiFacePicoWatch::draw7SegSteps() {
   using namespace face7seg;
   // Midnight reset+history-capture now happens centrally in
-  // Watchy::_captureStepsAtMidnight(), regardless of which face is active -
-  // see Watchy.cpp's WATCHFACE_STATE tick handler.
+  // PicoWatch::_captureStepsAtMidnight(), regardless of which face is active -
+  // see PicoWatch.cpp's WATCHFACE_STATE tick handler.
   uint32_t stepCount = sensor.getCounter();
   display.drawBitmap(10, 165, steps, 19, 23, k7SegDarkMode ? GxEPD_WHITE : GxEPD_BLACK);
   display.setCursor(35, 190);
   display.println(stepCount);
 }
 
-void MultiFaceWatchy::draw7SegBattery() {
+void MultiFacePicoWatch::draw7SegBattery() {
   using namespace face7seg;
   display.drawBitmap(158, 73, battery, 37, 21, k7SegDarkMode ? GxEPD_WHITE : GxEPD_BLACK);
   display.fillRect(163, 78, 27, k7SegBatterySegmentHeight,
@@ -280,7 +280,7 @@ void MultiFaceWatchy::draw7SegBattery() {
   }
 }
 
-void MultiFaceWatchy::draw7SegWeather() {
+void MultiFacePicoWatch::draw7SegWeather() {
   using namespace face7seg;
   weatherData currentWeather = getWeatherData();
 
@@ -331,9 +331,9 @@ void MultiFaceWatchy::draw7SegWeather() {
                       k7SegDarkMode ? GxEPD_WHITE : GxEPD_BLACK);
 }
 
-// ---- DOS (ported from Watchy_DOS.cpp) ----
+// ---- DOS (ported from PicoWatch_DOS.cpp) ----
 
-void MultiFaceWatchy::drawDos() {
+void MultiFacePicoWatch::drawDos() {
   char time[6];
   time[0] = '0' + ((currentTime.Hour / 10) % 10);
   time[1] = '0' + (currentTime.Hour % 10);
@@ -345,7 +345,7 @@ void MultiFaceWatchy::drawDos() {
   display.setTextColor(GxEPD_WHITE);
   display.setFont(&Px437_IBM_BIOS5pt7b);
   display.setCursor(0, 24);
-  display.println("WATCHY-DOS 1.1.8");
+  display.println("PICOWATCH-DOS 1.1.8");
   display.println("Copyright (c) 2020");
   display.println(" ");
   display.print("AUTOEXEC BAT ");
@@ -363,9 +363,9 @@ void MultiFaceWatchy::drawDos() {
   display.println("<C:\\>esptool");
 }
 
-// ---- MacPaint (ported from Watchy_MacPaint.cpp) ----
+// ---- MacPaint (ported from PicoWatch_MacPaint.cpp) ----
 
-void MultiFaceWatchy::drawMacPaint() {
+void MultiFacePicoWatch::drawMacPaint() {
   using namespace facemacpaint;
   const unsigned char *numbers[10] = {numbers0, numbers1, numbers2, numbers3, numbers4,
                                        numbers5, numbers6, numbers7, numbers8, numbers9};
@@ -385,9 +385,9 @@ void MultiFaceWatchy::drawMacPaint() {
   display.drawBitmap(153, 70, numbers[currentTime.Minute % 10], 38, 50, GxEPD_BLACK);
 }
 
-// ---- Mario (ported from Watchy_Mario.cpp) ----
+// ---- Mario (ported from PicoWatch_Mario.cpp) ----
 
-void MultiFaceWatchy::drawMario() {
+void MultiFacePicoWatch::drawMario() {
   using namespace facemario;
   static constexpr int kNumW = 44;
   static constexpr int kNumH = 44;
@@ -454,9 +454,9 @@ void MultiFaceWatchy::drawMario() {
                       kNumW, kNumH, GxEPD_BLACK);
 }
 
-// ---- Pokemon (ported from Watchy_Pokemon.cpp) ----
+// ---- Pokemon (ported from PicoWatch_Pokemon.cpp) ----
 
-void MultiFaceWatchy::drawPokemon() {
+void MultiFacePicoWatch::drawPokemon() {
   using namespace facepokemon;
   display.fillScreen(GxEPD_WHITE);
   display.drawBitmap(0, 0, pokemon, DISPLAY_WIDTH, DISPLAY_HEIGHT, GxEPD_BLACK);
@@ -474,9 +474,9 @@ void MultiFaceWatchy::drawPokemon() {
   display.print(currentTime.Minute);
 }
 
-// ---- Tetris (ported from Watchy_Tetris.cpp) ----
+// ---- Tetris (ported from PicoWatch_Tetris.cpp) ----
 
-void MultiFaceWatchy::drawTetris() {
+void MultiFacePicoWatch::drawTetris() {
   using namespace facetetris;
   const unsigned char *tetris_nums[10] = {tetris0, tetris1, tetris2, tetris3, tetris4,
                                            tetris5, tetris6, tetris7, tetris8, tetris9};
@@ -515,7 +515,7 @@ StarryXyPoint starryRotatePointAround(int x, int y, int ox, int oy, double angle
 }
 }  // namespace
 
-void MultiFaceWatchy::drawStarryHorizon() {
+void MultiFacePicoWatch::drawStarryHorizon() {
   display.fillScreen(GxEPD_BLACK);
   display.fillCircle(100, kStarryHorizonY + kStarryPlanetR, kStarryPlanetR, GxEPD_WHITE);
   drawStarryGrid();
@@ -524,7 +524,7 @@ void MultiFaceWatchy::drawStarryHorizon() {
   drawStarryDate();
 }
 
-void MultiFaceWatchy::drawStarryGrid() {
+void MultiFacePicoWatch::drawStarryGrid() {
   int prevY = kStarryHorizonY;
   for (int i = 0; i < 40; i += 1) {
     int y = prevY + int(abs(sin(double(i) / 10) * 10));
@@ -539,7 +539,7 @@ void MultiFaceWatchy::drawStarryGrid() {
   }
 }
 
-void MultiFaceWatchy::drawStarryStarsField() {
+void MultiFacePicoWatch::drawStarryStarsField() {
   using namespace facestarry;
   // rotate stars so that they make an entire revolution once per hour
   int minute = (int)currentTime.Minute;
@@ -562,7 +562,7 @@ void MultiFaceWatchy::drawStarryStarsField() {
   }
 }
 
-void MultiFaceWatchy::drawStarryTime() {
+void MultiFacePicoWatch::drawStarryTime() {
   display.setFont(&MADE_Sunflower_PERSONAL_USE39pt7b);
   display.setTextColor(GxEPD_WHITE);
   display.setTextWrap(false);
@@ -572,7 +572,7 @@ void MultiFaceWatchy::drawStarryTime() {
   free(timeStr);
 }
 
-void MultiFaceWatchy::drawStarryDate() {
+void MultiFacePicoWatch::drawStarryDate() {
   String monthStr = monthShortStr(currentTime.Month);
   String dayOfWeek = dayShortStr(currentTime.Wday);
   display.setFont(&FreeSansBold9pt7b);
@@ -584,7 +584,7 @@ void MultiFaceWatchy::drawStarryDate() {
   free(dateStr);
 }
 
-void MultiFaceWatchy::drawStarryCenteredString(const String &str, int x, int y, bool drawBg) {
+void MultiFacePicoWatch::drawStarryCenteredString(const String &str, int x, int y, bool drawBg) {
   int16_t x1, y1;
   uint16_t w, h;
 

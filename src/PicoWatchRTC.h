@@ -1,5 +1,5 @@
-#ifndef WATCHY_RTC_H
-#define WATCHY_RTC_H
+#ifndef PICOWATCH_RTC_H
+#define PICOWATCH_RTC_H
 
 #include "config.h"
 #include "time.h"
@@ -13,14 +13,14 @@
 #define YEAR_OFFSET_DS  1970
 #define YEAR_OFFSET_PCF 2000
 
-class WatchyRTC {
+class PicoWatchRTC {
 public:
   DS3232RTC rtc_ds;
   Rtc_Pcf8563 rtc_pcf;
   uint8_t rtcType;
 
 public:
-  WatchyRTC();
+  PicoWatchRTC();
   void init();
   void config(String datetime); // String datetime format is YYYY:MM:DD:HH:MM:SS
   void clearAlarm();

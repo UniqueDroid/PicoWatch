@@ -1,10 +1,10 @@
-#include "Watchy_Pokemon.h"
+#include "PicoWatch_Pokemon.h"
 #include "settings.h"
 
-WatchyPokemon watchy(settings);
+PicoWatchPokemon picowatch(settings);
 
 void setup(){
-  watchy.init();
+  picowatch.init();
 }
 
 void loop(){}

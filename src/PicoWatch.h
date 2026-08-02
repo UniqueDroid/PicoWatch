@@ -1,12 +1,12 @@
-#ifndef WATCHY_H
-#define WATCHY_H
+#ifndef PICOWATCH_H
+#define PICOWATCH_H
 
 #include <Arduino.h>
 #include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
-// WiFi setup itself still uses WiFiManager (see Watchy.cpp); these back the
+// WiFi setup itself still uses WiFiManager (see PicoWatch.cpp); these back the
 // post-connect status/File-Update/GitHub-Update web server instead.
 #include <WebServer.h>
 #include <WiFiClientSecure.h>
@@ -22,7 +22,7 @@
 #include "config.h"
 #include "esp_chip_info.h"
 #ifdef ARDUINO_ESP32S3_DEV
-  #include "Watchy32KRTC.h"
+  #include "PicoWatch32KRTC.h"
   #include "soc/rtc.h"
   #include "soc/rtc_io_reg.h"
   #include "soc/sens_reg.h"
@@ -37,7 +37,7 @@
   #define uS_TO_S_FACTOR 1000000ULL  //Conversion factor for micro seconds to seconds
   #define ADC_VOLTAGE_DIVIDER ((360.0f+100.0f)/360.0f) //Voltage divider at battery ADC  
 #else
-  #include "WatchyRTC.h"
+  #include "PicoWatchRTC.h"
 #endif
 
 typedef struct weatherData {
@@ -50,7 +50,7 @@ typedef struct weatherData {
   tmElements_t sunset;
 } weatherData;
 
-typedef struct watchySettings {
+typedef struct picowatchSettings {
   // Weather Settings
   String cityID;
   String lat;
@@ -65,21 +65,21 @@ typedef struct watchySettings {
   int gmtOffset;
   //
   bool vibrateOClock;
-} watchySettings;
+} picowatchSettings;
 
-class Watchy {
+class PicoWatch {
 public:
   #ifdef ARDUINO_ESP32S3_DEV
-   static Watchy32KRTC RTC;
+   static PicoWatch32KRTC RTC;
   #else
-   static WatchyRTC RTC;
+   static PicoWatchRTC RTC;
   #endif
-  static GxEPD2_BW<WatchyDisplay, WatchyDisplay::HEIGHT> display;
+  static GxEPD2_BW<PicoWatchDisplay, PicoWatchDisplay::HEIGHT> display;
   tmElements_t currentTime;
-  watchySettings settings;
+  picowatchSettings settings;
 
 public:
-  explicit Watchy(const watchySettings &s) : settings(s) {} // constructor
+  explicit PicoWatch(const picowatchSettings &s) : settings(s) {} // constructor
   void init(String datetime = "");
   void deepSleep();
   float getBatteryVoltage();
@@ -104,7 +104,7 @@ public:
   bool syncNTP(long gmt);
   bool syncNTP(long gmt, String ntpServer);
   void setTime();
-  void setTimezone(); // interactive GMT offset picker, persisted in flash (NVS) - see Watchy.cpp
+  void setTimezone(); // interactive GMT offset picker, persisted in flash (NVS) - see PicoWatch.cpp
   void setWeatherCity(); // interactive 7-digit OpenWeatherMap city ID picker, persisted in flash (NVS)
   void setupWifi();
   bool connectWiFi();
@@ -119,7 +119,7 @@ public:
 
   // Top-level Stopwatch and Steps (Last 7 Days) apps - generic, not
   // per-watchface, so implemented directly here rather than as virtual
-  // hooks. See Watchy.cpp for the step-history capture, which runs once per
+  // hooks. See PicoWatch.cpp for the step-history capture, which runs once per
   // minute regardless of which face is active (previously only happened to
   // run inside 7_SEG's own draw method).
   void showStopwatch();
@@ -133,14 +133,14 @@ public:
 
   // Lets the user pick a different watchface design, called from the
   // "Change Watchface" menu item. No-op by default; only meaningful for a
-  // Watchy subclass that actually holds more than one drawWatchFace()
-  // implementation (see MultiFaceWatchy). May return to either
+  // PicoWatch subclass that actually holds more than one drawWatchFace()
+  // implementation (see MultiFacePicoWatch). May return to either
   // WATCHFACE_STATE (design applied) or MAIN_MENU_STATE (cancelled) -
   // handleButtonPress() checks guiState afterward rather than assuming.
   virtual void changeWatchface() {}
 
   // Called once early during a true power-on reset (not a deep-sleep wake),
-  // before the first showWatchFace(). No-op by default; MultiFaceWatchy uses
+  // before the first showWatchFace(). No-op by default; MultiFacePicoWatch uses
   // it to load its persisted selectedFace from flash so a reset doesn't
   // silently fall back to face 0.
   virtual void onReset() {}

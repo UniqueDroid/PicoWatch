@@ -2,7 +2,7 @@
 
 ### Check out the issue tracker
 
-Search through [Issue tracker](https://github.com/sqfmi/Watchy/issues) for matching topics. It is also recommended to check with current [Pull requests](https://github.com/sqfmi/Watchy/pulls).
+Search through [Issue tracker](https://github.com/UniqueDroid/PicoWatch/issues) for matching topics. It is also recommended to check with current [Pull requests](https://github.com/UniqueDroid/PicoWatch/pulls).
 
 ### Issue Pull Request
 

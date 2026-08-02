@@ -1,8 +1,8 @@
-#include "WatchyRTC.h"
+#include "PicoWatchRTC.h"
 
-WatchyRTC::WatchyRTC(){}
+PicoWatchRTC::PicoWatchRTC(){}
 
-void WatchyRTC::init() {
+void PicoWatchRTC::init() {
   byte error;
   Wire.beginTransmission(RTC_DS_ADDR);
   error = Wire.endTransmission();
@@ -20,7 +20,7 @@ void WatchyRTC::init() {
   }
 }
 
-void WatchyRTC::config(
+void PicoWatchRTC::config(
     String datetime) { // String datetime format is YYYY:MM:DD:HH:MM:SS
   if (rtcType == DS3231) {
     _DSConfig(datetime);
@@ -29,7 +29,7 @@ void WatchyRTC::config(
   }
 }
 
-void WatchyRTC::clearAlarm() {
+void PicoWatchRTC::clearAlarm() {
   if (rtcType == DS3231) {
     rtc_ds.alarm(DS3232RTC::ALARM_2);
   } else {
@@ -44,7 +44,7 @@ void WatchyRTC::clearAlarm() {
   }
 }
 
-void WatchyRTC::read(tmElements_t &tm) {
+void PicoWatchRTC::read(tmElements_t &tm) {
   if (rtcType == DS3231) {
     rtc_ds.read(tm);
   } else {
@@ -61,7 +61,7 @@ void WatchyRTC::read(tmElements_t &tm) {
   }
 }
 
-void WatchyRTC::set(tmElements_t tm) {
+void PicoWatchRTC::set(tmElements_t tm) {
   if (rtcType == DS3231) {
     time_t t = makeTime(tm);
     rtc_ds.set(t);
@@ -79,7 +79,7 @@ void WatchyRTC::set(tmElements_t tm) {
   }
 }
 
-uint8_t WatchyRTC::temperature() {
+uint8_t PicoWatchRTC::temperature() {
   if (rtcType == DS3231) {
     return rtc_ds.temperature();
   } else {
@@ -87,7 +87,7 @@ uint8_t WatchyRTC::temperature() {
   }
 }
 
-void WatchyRTC::_DSConfig(
+void PicoWatchRTC::_DSConfig(
     String datetime) { // String datetime is YYYY:MM:DD:HH:MM:SS
   if (datetime != "") {
     tmElements_t tm;
@@ -104,11 +104,11 @@ void WatchyRTC::_DSConfig(
   // https://github.com/JChristensen/DS3232RTC
   rtc_ds.squareWave(DS3232RTC::SQWAVE_NONE); // disable square wave output
   rtc_ds.setAlarm(DS3232RTC::ALM2_EVERY_MINUTE, 0, 0, 0,
-                  0); // alarm wakes up Watchy every minute
+                  0); // alarm wakes up PicoWatch every minute
   rtc_ds.alarmInterrupt(DS3232RTC::ALARM_2, true); // enable alarm interrupt
 }
 
-void WatchyRTC::_PCFConfig(
+void PicoWatchRTC::_PCFConfig(
     String datetime) { // String datetime is YYYY:MM:DD:HH:MM:SS
   if (datetime != "") {
     tmElements_t tm;
@@ -134,7 +134,7 @@ void WatchyRTC::_PCFConfig(
   clearAlarm();
 }
 
-String WatchyRTC::_getValue(String data, char separator, int index) {
+String PicoWatchRTC::_getValue(String data, char separator, int index) {
   int found      = 0;
   int strIndex[] = {0, -1};
   int maxIndex   = data.length() - 1;

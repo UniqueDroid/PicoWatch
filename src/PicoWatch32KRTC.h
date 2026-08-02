@@ -1,13 +1,13 @@
-#ifndef WATCHY_32K_RTC_H
-#define WATCHY_32K_RTC_H
+#ifndef PICOWATCH_32K_RTC_H
+#define PICOWATCH_32K_RTC_H
 
 #include <Arduino.h>
 #include <TimeLib.h>
 #include "config.h"
 
-class Watchy32KRTC {
+class PicoWatch32KRTC {
 public:
-  Watchy32KRTC();
+  PicoWatch32KRTC();
   void init();
   void config(String datetime); //datetime format is YYYY:MM:DD:HH:MM:SS
   void clearAlarm();

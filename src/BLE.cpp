@@ -79,7 +79,7 @@ BLE::~BLE(void) {}
 
 //
 // begin
-bool BLE::begin(const char *localName = "Watchy BLE OTA") {
+bool BLE::begin(const char *localName = "PicoWatch BLE OTA") {
   // Create the BLE Device
   BLEDevice::init(localName);
 
@@ -120,7 +120,7 @@ bool BLE::begin(const char *localName = "Watchy BLE OTA") {
                                 SOFTWARE_VERSION_MAJOR, SOFTWARE_VERSION_MINOR,
                                 SOFTWARE_VERSION_PATCH};
   pVersionCharacteristic->setValue((uint8_t *)hardwareVersion, 5);
-  pWatchFaceNameCharacteristic->setValue("Watchy 7 Segment");
+  pWatchFaceNameCharacteristic->setValue("PicoWatch 7 Segment");
 
   return true;
 }

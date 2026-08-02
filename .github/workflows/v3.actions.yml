@@ -35,5 +35,5 @@ jobs:
         done
     - uses: softprops/action-gh-release@v1
       with:
-        name: "Watchy Arduino Library ${{ github.ref_name }}"
+        name: "PicoWatch Arduino Library ${{ github.ref_name }}"
         files: ${{ github.workspace }}/examples/WatchFaces/**/build/*.bin

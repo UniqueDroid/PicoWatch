@@ -1,10 +1,10 @@
-#include "Watchy_DOS.h"
+#include "PicoWatch_DOS.h"
 #include "settings.h"
 
-WatchyDOS watchy(settings);
+PicoWatchDOS picowatch(settings);
 
 void setup(){
-  watchy.init();
+  picowatch.init();
 }
 
 void loop(){}

@@ -1,8 +1,8 @@
-// STARRY HORIZON for Watchy by SQFMI
+// STARRY HORIZON for PicoWatch by SQFMI
 // Copyright 2021 Dan Delany dan.delany@gmail.com
 // Released under free MIT License : https://github.com/dandelany/watchy-faces/blob/main/LICENSE
 
-#include <Watchy.h> //include the Watchy library
+#include <PicoWatch.h> //include the PicoWatch library
 #include <Fonts/FreeSansBold9pt7b.h> //include any fonts you want to use
 #include "MadeSunflower39pt7b.h"
 #include "stars.h"
@@ -49,9 +49,9 @@ struct xyPoint rotatePointAround(int x, int y, int ox, int oy, double angle) {
   return newPoint;
 }
 
-class StarryHorizon : public Watchy {
+class StarryHorizon : public PicoWatch {
     public:
-        StarryHorizon(const watchySettings& s) : Watchy(s) {
+        StarryHorizon(const picowatchSettings& s) : PicoWatch(s) {
           // uncomment to re-generate stars
           // initStars();
         }
@@ -147,5 +147,5 @@ void setup() {
 }
 
 void loop() {
-  // this should never run, Watchy deep sleeps after init();
+  // this should never run, PicoWatch deep sleeps after init();
 }

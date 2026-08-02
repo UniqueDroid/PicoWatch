@@ -1,8 +1,8 @@
-#include "Watchy_Tetris.h"
+#include "PicoWatch_Tetris.h"
 
 const unsigned char *tetris_nums [10] = {tetris0, tetris1, tetris2, tetris3, tetris4, tetris5, tetris6, tetris7, tetris8, tetris9};
 
-void WatchyTetris::drawWatchFace(){
+void PicoWatchTetris::drawWatchFace(){
     display.fillScreen(GxEPD_WHITE);
     display.drawBitmap(0, 0, tetrisbg, DISPLAY_WIDTH, DISPLAY_HEIGHT, GxEPD_BLACK);
 

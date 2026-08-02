@@ -1,10 +1,10 @@
-#include "MultiFaceWatchy.h"
+#include "MultiFacePicoWatch.h"
 #include "settings.h"
 
-MultiFaceWatchy watchy(settings);
+MultiFacePicoWatch picowatch(settings);
 
 void setup() {
-  watchy.init();
+  picowatch.init();
 }
 
 void loop() {}

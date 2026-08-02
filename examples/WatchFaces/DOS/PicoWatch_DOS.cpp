@@ -1,6 +1,6 @@
-#include "Watchy_DOS.h"
+#include "PicoWatch_DOS.h"
 
-void WatchyDOS::drawWatchFace(){
+void PicoWatchDOS::drawWatchFace(){
     char time[6];
     time[0] = '0' + ((currentTime.Hour/10)%10);
     time[1] = '0' + (currentTime.Hour%10);
@@ -12,7 +12,7 @@ void WatchyDOS::drawWatchFace(){
     display.setTextColor(GxEPD_WHITE);
     display.setFont(&Px437_IBM_BIOS5pt7b);
     display.setCursor(0, 24);
-    display.println("WATCHY-DOS 1.1.8");
+    display.println("PICOWATCH-DOS 1.1.8");
     display.println("Copyright (c) 2020");
     display.println(" ");
     display.print("AUTOEXEC BAT ");

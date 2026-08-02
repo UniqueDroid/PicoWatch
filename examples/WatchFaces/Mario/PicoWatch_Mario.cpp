@@ -1,4 +1,4 @@
-#include "Watchy_Mario.h"
+#include "PicoWatch_Mario.h"
 #define NUM_W 44
 #define NUM_H 44
 #define COIN_W 24
@@ -17,7 +17,7 @@
 
 const unsigned char *numbers [10] = {mario0, mario1, mario2, mario3, mario4, mario5, mario6, mario7, mario8, mario9};
 
-void WatchyMario::drawWatchFace(){
+void PicoWatchMario::drawWatchFace(){
     display.fillScreen(GxEPD_WHITE);
     display.drawBitmap(0, 0, mariobg, DISPLAY_WIDTH, DISPLAY_HEIGHT, GxEPD_BLACK);
 

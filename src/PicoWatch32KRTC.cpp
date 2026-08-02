@@ -1,8 +1,8 @@
-#include "Watchy32KRTC.h"
+#include "PicoWatch32KRTC.h"
 
-Watchy32KRTC::Watchy32KRTC(){}
+PicoWatch32KRTC::PicoWatch32KRTC(){}
 
-void Watchy32KRTC::init() {
+void PicoWatch32KRTC::init() {
 
 }
 
@@ -13,7 +13,7 @@ void Watchy32KRTC::init() {
 
 */
 
-void Watchy32KRTC::config(String datetime) { // String datetime format is YYYY:MM:DD:HH:MM:SS
+void PicoWatch32KRTC::config(String datetime) { // String datetime format is YYYY:MM:DD:HH:MM:SS
     struct tm timeInfo;
     memset(&timeInfo, 0, sizeof(timeInfo));
 
@@ -33,11 +33,11 @@ void Watchy32KRTC::config(String datetime) { // String datetime format is YYYY:M
     }
 }
 
-void Watchy32KRTC::clearAlarm() {
+void PicoWatch32KRTC::clearAlarm() {
 
 }
 
-void Watchy32KRTC::read(tmElements_t &tm) {
+void PicoWatch32KRTC::read(tmElements_t &tm) {
   time_t now;
   struct tm timeInfo;
   time(&now);
@@ -54,7 +54,7 @@ void Watchy32KRTC::read(tmElements_t &tm) {
   tm.Second = timeInfo.tm_sec;
 }
 
-void Watchy32KRTC::set(tmElements_t tm) {
+void PicoWatch32KRTC::set(tmElements_t tm) {
   struct tm timeInfo;
   timeInfo.tm_year = tm.Year + 70;
   timeInfo.tm_mon  = tm.Month - 1;
@@ -74,11 +74,11 @@ void Watchy32KRTC::set(tmElements_t tm) {
   }  
 }
 
-uint8_t Watchy32KRTC::temperature() {
+uint8_t PicoWatch32KRTC::temperature() {
  return 0;
 }
 
-String Watchy32KRTC::_getValue(String data, char separator, int index) {
+String PicoWatch32KRTC::_getValue(String data, char separator, int index) {
   int found      = 0;
   int strIndex[] = {0, -1};
   int maxIndex   = data.length() - 1;
@@ -94,7 +94,7 @@ String Watchy32KRTC::_getValue(String data, char separator, int index) {
   return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
 }
 
-void Watchy32KRTC::_timeval_to_tm(struct timeval *tv, struct tm *tm) {
+void PicoWatch32KRTC::_timeval_to_tm(struct timeval *tv, struct tm *tm) {
   // Get the seconds and microseconds from the timeval struct
   time_t seconds = tv->tv_sec;
   int microseconds = tv->tv_usec;

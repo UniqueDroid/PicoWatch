@@ -2,19 +2,19 @@
 #define CONFIG_H
 
 // Versioning
-#define WATCHY_LIB_VER "1.4.14"
+#define PICOWATCH_LIB_VER "1.4.14"
 
 //pins
 
 #ifdef ARDUINO_ESP32S3_DEV //V3
 
-#define WATCHY_V3_SDA 12
-#define WATCHY_V3_SCL 11
+#define PICOWATCH_V3_SDA 12
+#define PICOWATCH_V3_SCL 11
 
-#define WATCHY_V3_SS    33
-#define WATCHY_V3_MOSI  48
-#define WATCHY_V3_MISO  46
-#define WATCHY_V3_SCK   47
+#define PICOWATCH_V3_SS    33
+#define PICOWATCH_V3_MOSI  48
+#define PICOWATCH_V3_MISO  46
+#define PICOWATCH_V3_SCK   47
 
 #define MENU_BTN_PIN  7
 #define BACK_BTN_PIN  6
@@ -44,7 +44,7 @@
 
 #if !defined(ARDUINO_WATCHY_V10) && !defined(ARDUINO_WATCHY_V15) && !defined(ARDUINO_WATCHY_V20)
 
-#pragma message "Please install the latest ESP32 Arduino Core (2.0.5+) and choose Watchy as the target board"
+#pragma message "Please install the latest ESP32 Arduino Core (2.0.5+) and choose PicoWatch as the target board"
 #pragma message "Hardware revision is not defined at the project level, please define in config.h. Defaulting to ARDUINO_WATCHY_V20"
 
 #define ARDUINO_WATCHY_V20
@@ -93,10 +93,10 @@
 #define DISPLAY_HEIGHT 200
 // wifi
 #define WIFI_AP_TIMEOUT 60          // seconds with zero AP clients connected before the setup portal auto-shuts-down
-#define WIFI_AP_SSID    "Watchy AP"
+#define WIFI_AP_SSID    "PicoWatch AP"
 #define WIFI_STAY_CONNECTED_TIMEOUT 300  // seconds the connection stays up/reachable after a successful WiFi Setup, before auto-disconnecting to save battery
 // GitHub OTA update (Settings -> "Update via GitHub", and the WiFi web UI's
-// "GitHub Update" button both call Watchy::updateFromGithub(), which checks
+// "GitHub Update" button both call PicoWatch::updateFromGithub(), which checks
 // this repo's latest release and downloads this asset by exact name).
 #define GITHUB_OTA_OWNER "UniqueDroid"
 #define GITHUB_OTA_REPO  "PicoWatch"
@@ -113,7 +113,7 @@
 #define MENU_LENGTH     6           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Weather, Settings
 #define SETTINGS_MENU_LENGTH 9      // About, Vibrate, Accelerometer, Set Time, WiFi, Sync NTP, Set Timezone, Set City, Update via GitHub
 #define SETTINGS_MENU_ITEM_HEIGHT 22  // tighter than MENU_HEIGHT so all 9 rows still fit within DISPLAY_HEIGHT (200px)
-// alarm (Watchy::setAlarm())
+// alarm (PicoWatch::setAlarm())
 #define SET_ALARM_HOUR    0
 #define SET_ALARM_MINUTE  1
 #define SET_ALARM_ENABLED 2
@@ -125,8 +125,8 @@
 #define SET_DAY    4
 #define HOUR_12_24 24
 // BLE OTA
-#define BLE_DEVICE_NAME        "Watchy BLE OTA"
-#define WATCHFACE_NAME         "Watchy 7 Segment"
+#define BLE_DEVICE_NAME        "PicoWatch BLE OTA"
+#define WATCHFACE_NAME         "PicoWatch 7 Segment"
 #define SOFTWARE_VERSION_MAJOR 1
 #define SOFTWARE_VERSION_MINOR 0
 #define SOFTWARE_VERSION_PATCH 0

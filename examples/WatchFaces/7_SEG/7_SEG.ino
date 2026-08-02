@@ -1,10 +1,10 @@
-#include "Watchy_7_SEG.h"
+#include "PicoWatch_7_SEG.h"
 #include "settings.h"
 
-Watchy7SEG watchy(settings);
+PicoWatch7SEG picowatch(settings);
 
 void setup(){
-  watchy.init();
+  picowatch.init();
 }
 
 void loop(){}

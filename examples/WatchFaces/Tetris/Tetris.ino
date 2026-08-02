@@ -1,10 +1,10 @@
-#include "Watchy_Tetris.h"
+#include "PicoWatch_Tetris.h"
 #include "settings.h"
 
-WatchyTetris watchy(settings);
+PicoWatchTetris picowatch(settings);
 
 void setup(){
-  watchy.init();
+  picowatch.init();
 }
 
 void loop(){}

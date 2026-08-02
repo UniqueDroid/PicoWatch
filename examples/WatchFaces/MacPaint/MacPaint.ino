@@ -1,10 +1,10 @@
-#include "Watchy_MacPaint.h"
+#include "PicoWatch_MacPaint.h"
 #include "settings.h"
 
-WatchyMacPaint watchy(settings);
+PicoWatchMacPaint picowatch(settings);
 
 void setup(){
-  watchy.init();
+  picowatch.init();
 }
 
 void loop(){}

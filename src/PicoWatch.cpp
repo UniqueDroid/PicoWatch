@@ -1,6 +1,6 @@
-#include "Watchy.h"
+#include "PicoWatch.h"
 #include <Preferences.h>
-#include <mbedtls/sha256.h> // SHA256 verification for GitHub OTA - see Watchy::updateFromGithub()
+#include <mbedtls/sha256.h> // SHA256 verification for GitHub OTA - see PicoWatch::updateFromGithub()
 
 // Cached copy of the persisted alarm (see setAlarm()/onReset()) - survives
 // deep sleep like guiState/menuIndex; loaded from flash once on reset rather
@@ -12,7 +12,7 @@ RTC_DATA_ATTR bool alarmEnabled;
 
 // Weather city ID actually used at runtime (OpenWeatherMap numeric ID, see
 // https://openweathermap.org/current#cityid) - defaults to settings.cityID
-// but can be overridden on-device via Watchy::setWeatherCity() without a
+// but can be overridden on-device via PicoWatch::setWeatherCity() without a
 // recompile. Can't just mutate settings.cityID directly: settings is a
 // regular (non-RTC) object member reconstructed from the compile-time
 // default on every wake from deep sleep, so an override stored there would
@@ -22,11 +22,11 @@ RTC_DATA_ATTR char weatherCityID[12];
 namespace {
 // Manual timezone override, persisted in flash (NVS) so it survives power
 // loss, not just deep sleep (unlike the RTC_DATA_ATTR globals below). Once
-// set via Watchy::setTimezone(), the weather-fetch code stops overwriting
+// set via PicoWatch::setTimezone(), the weather-fetch code stops overwriting
 // gmtOffset with the queried city's timezone (see the weather API handling
 // further down) - that auto-overwrite was clobbering manually-corrected
 // times whenever weather/NTP synced.
-constexpr const char *kPrefsNamespace = "watchy";
+constexpr const char *kPrefsNamespace = "picowatch";
 constexpr const char *kPrefsManualKey = "tzManual";
 constexpr const char *kPrefsOffsetKey = "gmtOffset";
 constexpr long kGmtOffsetStepSec = 15 * 60;       // 15 minutes - covers every real-world UTC offset (e.g. UTC+5:45)
@@ -55,7 +55,7 @@ void saveManualGmtOffset(long offsetSec) {
 // Step-count history for the last 7 complete days, persisted in flash (NVS)
 // so it survives a reset. history[0] is the most recently completed day,
 // history[6] the oldest. Captured once per real day at 00:00 regardless of
-// which watchface is active (see Watchy::init()'s WATCHFACE_STATE tick
+// which watchface is active (see PicoWatch::init()'s WATCHFACE_STATE tick
 // handler) - previously this reset only happened to run because 7_SEG's own
 // draw method checked for midnight, so any other active face silently never
 // reset (or recorded) the daily step count at all.
@@ -147,14 +147,14 @@ struct DayForecastEntry {
 }  // namespace
 
 #ifdef ARDUINO_ESP32S3_DEV
-  Watchy32KRTC Watchy::RTC;
+  PicoWatch32KRTC PicoWatch::RTC;
   #define ACTIVE_LOW 0
 #else
-  WatchyRTC Watchy::RTC;
+  PicoWatchRTC PicoWatch::RTC;
   #define ACTIVE_LOW 1
 #endif
-GxEPD2_BW<WatchyDisplay, WatchyDisplay::HEIGHT> Watchy::display(
-    WatchyDisplay{});
+GxEPD2_BW<PicoWatchDisplay, PicoWatchDisplay::HEIGHT> PicoWatch::display(
+    PicoWatchDisplay{});
 
 RTC_DATA_ATTR int guiState;
 RTC_DATA_ATTR int menuIndex;
@@ -171,17 +171,17 @@ RTC_DATA_ATTR tmElements_t bootTime;
 RTC_DATA_ATTR uint32_t lastIPAddress;
 RTC_DATA_ATTR char lastSSID[30];
 
-void Watchy::init(String datetime) {
+void PicoWatch::init(String datetime) {
   esp_sleep_wakeup_cause_t wakeup_reason;
   wakeup_reason = esp_sleep_get_wakeup_cause(); // get wake up reason
   #ifdef ARDUINO_ESP32S3_DEV
-    Wire.begin(WATCHY_V3_SDA, WATCHY_V3_SCL);     // init i2c
+    Wire.begin(PICOWATCH_V3_SDA, PICOWATCH_V3_SCL);     // init i2c
   #else
     Wire.begin(SDA, SCL);                         // init i2c
   #endif
   RTC.init();
   // Init the display since is almost sure we will use it
-  display.epd2.initWatchy();
+  display.epd2.initPicoWatch();
 
   switch (wakeup_reason) {
   #ifdef ARDUINO_ESP32S3_DEV
@@ -252,7 +252,7 @@ void Watchy::init(String datetime) {
   }
   deepSleep();
 }
-void Watchy::deepSleep() {
+void PicoWatch::deepSleep() {
   display.hibernate();
   RTC.clearAlarm();        // resets the alarm flag in the RTC
   #ifdef ARDUINO_ESP32S3_DEV
@@ -294,7 +294,7 @@ namespace {
 // SETTINGS_MENU_STATE) selections share this shape across both the
 // single-press switch and its fast-menu-loop duplicate below, so it's
 // factored out once instead of copy-pasted four times.
-void dispatchTopMenu(Watchy *w, int index) {
+void dispatchTopMenu(PicoWatch *w, int index) {
   switch (index) {
   case 0:
     w->changeWatchface();
@@ -319,7 +319,7 @@ void dispatchTopMenu(Watchy *w, int index) {
   }
 }
 
-void dispatchSettingsMenu(Watchy *w, int index) {
+void dispatchSettingsMenu(PicoWatch *w, int index) {
   switch (index) {
   case 0:
     w->showAbout();
@@ -357,7 +357,7 @@ void dispatchSettingsMenu(Watchy *w, int index) {
 }
 }  // namespace
 
-void Watchy::handleButtonPress() {
+void PicoWatch::handleButtonPress() {
   uint64_t wakeupBit = esp_sleep_get_ext1_wakeup_status();
   // Menu Button
   if (wakeupBit & MENU_BTN_MASK) {
@@ -503,7 +503,7 @@ void Watchy::handleButtonPress() {
   }
 }
 
-void Watchy::showMenu(byte menuIndex, bool partialRefresh) {
+void PicoWatch::showMenu(byte menuIndex, bool partialRefresh) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -533,7 +533,7 @@ void Watchy::showMenu(byte menuIndex, bool partialRefresh) {
   alreadyInMenu = false;
 }
 
-void Watchy::showFastMenu(byte menuIndex) {
+void PicoWatch::showFastMenu(byte menuIndex) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -562,7 +562,7 @@ void Watchy::showFastMenu(byte menuIndex) {
   guiState = MAIN_MENU_STATE;
 }
 
-void Watchy::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
+void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -571,7 +571,7 @@ void Watchy::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
   uint16_t w, h;
   int16_t yPos;
 
-  const char *settingsMenuItems[] = {"About Watchy", "Vibrate Motor", "Show Accelerometer",
+  const char *settingsMenuItems[] = {"About PicoWatch", "Vibrate Motor", "Show Accelerometer",
                                       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
                                       "Sync NTP",     "Set Timezone", "Set City",
                                       "Update via GitHub"};
@@ -595,7 +595,7 @@ void Watchy::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
   alreadyInMenu = false;
 }
 
-void Watchy::showFastSettingsMenu(byte settingsMenuIndex) {
+void PicoWatch::showFastSettingsMenu(byte settingsMenuIndex) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -604,7 +604,7 @@ void Watchy::showFastSettingsMenu(byte settingsMenuIndex) {
   uint16_t w, h;
   int16_t yPos;
 
-  const char *settingsMenuItems[] = {"About Watchy", "Vibrate Motor", "Show Accelerometer",
+  const char *settingsMenuItems[] = {"About PicoWatch", "Vibrate Motor", "Show Accelerometer",
                                       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
                                       "Sync NTP",     "Set Timezone", "Set City",
                                       "Update via GitHub"};
@@ -627,7 +627,7 @@ void Watchy::showFastSettingsMenu(byte settingsMenuIndex) {
   guiState = SETTINGS_MENU_STATE;
 }
 
-void Watchy::_captureStepsAtMidnight() {
+void PicoWatch::_captureStepsAtMidnight() {
   if (!(currentTime.Hour == 0 && currentTime.Minute == 0)) return;
 
   const long today = dayNumber(currentTime);
@@ -653,7 +653,7 @@ void Watchy::_captureStepsAtMidnight() {
   sensor.resetStepCounter();
 }
 
-void Watchy::showStopwatch() {
+void PicoWatch::showStopwatch() {
   guiState = APP_STATE;
 
   bool running = false;
@@ -743,7 +743,7 @@ void Watchy::showStopwatch() {
   showMenu(menuIndex, false);
 }
 
-void Watchy::showStepsHistory() {
+void PicoWatch::showStepsHistory() {
   guiState = APP_STATE;
 
   int32_t history[kStepsHistoryDays];
@@ -776,7 +776,7 @@ void Watchy::showStepsHistory() {
   showMenu(menuIndex, false);
 }
 
-void Watchy::setAlarm() {
+void PicoWatch::setAlarm() {
   guiState = APP_STATE;
 
   uint8_t hour = alarmHour;
@@ -889,7 +889,7 @@ void Watchy::setAlarm() {
   showMenu(menuIndex, false);
 }
 
-void Watchy::showWeatherForecast() {
+void PicoWatch::showWeatherForecast() {
   guiState = APP_STATE;
 
   static constexpr int kForecastDays = 5;
@@ -988,7 +988,7 @@ void Watchy::showWeatherForecast() {
   showMenu(menuIndex, false);
 }
 
-void Watchy::showAbout() {
+void PicoWatch::showAbout() {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -996,7 +996,7 @@ void Watchy::showAbout() {
   display.setCursor(0, 20);
 
   display.print("LibVer: ");
-  display.println(WATCHY_LIB_VER);
+  display.println(PICOWATCH_LIB_VER);
 
   display.print("Rev: v");
   display.println(getBoardRevision());
@@ -1044,7 +1044,7 @@ void Watchy::showAbout() {
 // digest) and reboots. Blocking, shows progress on the e-ink display.
 // Shared by the Settings menu's "Update via GitHub" item and the web UI's
 // "GitHub Update" button.
-void Watchy::updateFromGithub() {
+void PicoWatch::updateFromGithub() {
   guiState = APP_STATE;
   display.epd2.setBusyCallback(0); // temporarily disable lightsleep on busy
 
@@ -1063,7 +1063,7 @@ void Watchy::updateFromGithub() {
     if (line2) display.println(line2);
     display.display(false);
     delay(2500);
-    display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
+    display.epd2.setBusyCallback(PicoWatchDisplay::busyCallback);
   };
 
   if (!connectWiFi()) {
@@ -1112,7 +1112,7 @@ void Watchy::updateFromGithub() {
     display.println(tag);
     display.display(false);
     delay(2500);
-    display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
+    display.epd2.setBusyCallback(PicoWatchDisplay::busyCallback);
     return;
   }
 
@@ -1237,7 +1237,7 @@ void Watchy::updateFromGithub() {
   ESP.restart();
 }
 
-void Watchy::showBuzz() {
+void PicoWatch::showBuzz() {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -1249,7 +1249,7 @@ void Watchy::showBuzz() {
   showSettingsMenu(settingsMenuIndex, false);
 }
 
-void Watchy::vibMotor(uint8_t intervalMs, uint8_t length) {
+void PicoWatch::vibMotor(uint8_t intervalMs, uint8_t length) {
   pinMode(VIB_MOTOR_PIN, OUTPUT);
   bool motorOn = false;
   for (int i = 0; i < length; i++) {
@@ -1259,7 +1259,7 @@ void Watchy::vibMotor(uint8_t intervalMs, uint8_t length) {
   }
 }
 
-void Watchy::setTime() {
+void PicoWatch::setTime() {
 
   guiState = APP_STATE;
 
@@ -1427,7 +1427,7 @@ void Watchy::setTime() {
   showSettingsMenu(settingsMenuIndex, false);
 }
 
-void Watchy::setTimezone() {
+void PicoWatch::setTimezone() {
   guiState = APP_STATE;
 
   long offsetSec = gmtOffset;
@@ -1493,7 +1493,7 @@ void Watchy::setTimezone() {
   showSettingsMenu(settingsMenuIndex, false);
 }
 
-void Watchy::setWeatherCity() {
+void PicoWatch::setWeatherCity() {
   guiState = APP_STATE;
 
   static constexpr int kDigitCount = 7;
@@ -1595,7 +1595,7 @@ void Watchy::setWeatherCity() {
   showSettingsMenu(settingsMenuIndex, false);
 }
 
-void Watchy::showAccelerometer() {
+void PicoWatch::showAccelerometer() {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -1667,7 +1667,7 @@ void Watchy::showAccelerometer() {
   showSettingsMenu(settingsMenuIndex, false);
 }
 
-void Watchy::showWatchFace(bool partialRefresh) {
+void PicoWatch::showWatchFace(bool partialRefresh) {
   display.setFullWindow();
   // At this point it is sure we are going to update
   display.epd2.asyncPowerOn();
@@ -1676,7 +1676,7 @@ void Watchy::showWatchFace(bool partialRefresh) {
   guiState = WATCHFACE_STATE;
 }
 
-void Watchy::drawWatchFace() {
+void PicoWatch::drawWatchFace() {
   display.setFont(&DSEG7_Classic_Bold_53);
   display.setCursor(5, 53 + 60);
   if (currentTime.Hour < 10) {
@@ -1690,13 +1690,13 @@ void Watchy::drawWatchFace() {
   display.println(currentTime.Minute);
 }
 
-weatherData Watchy::getWeatherData() {
+weatherData PicoWatch::getWeatherData() {
   return _getWeatherData(weatherCityID, settings.lat, settings.lon,
     settings.weatherUnit, settings.weatherLang, settings.weatherURL,
     settings.weatherAPIKey, settings.weatherUpdateInterval);
 }
 
-weatherData Watchy::_getWeatherData(String cityID, String lat, String lon, String units, String lang,
+weatherData PicoWatch::_getWeatherData(String cityID, String lat, String lon, String units, String lang,
                                    String url, String apiKey,
                                    uint8_t updateInterval) {
   currentWeather.isMetric = units == String("metric");
@@ -1765,7 +1765,7 @@ weatherData Watchy::_getWeatherData(String cityID, String lat, String lon, Strin
   return currentWeather;
 }
 
-float Watchy::getBatteryVoltage() {
+float PicoWatch::getBatteryVoltage() {
   #ifdef ARDUINO_ESP32S3_DEV
     return analogReadMilliVolts(BATT_ADC_PIN) / 1000.0f * ADC_VOLTAGE_DIVIDER;
   #else
@@ -1778,7 +1778,7 @@ float Watchy::getBatteryVoltage() {
   #endif
 }
 
-uint8_t Watchy::getBoardRevision() {
+uint8_t PicoWatch::getBoardRevision() {
   esp_chip_info_t chip_info;
   esp_chip_info(&chip_info);
   if(chip_info.model == CHIP_ESP32){ //Revision 1.0 - 2.0
@@ -1803,7 +1803,7 @@ uint8_t Watchy::getBoardRevision() {
   return -1;
 }
 
-uint16_t Watchy::_readRegister(uint8_t address, uint8_t reg, uint8_t *data,
+uint16_t PicoWatch::_readRegister(uint8_t address, uint8_t reg, uint8_t *data,
                                uint16_t len) {
   Wire.beginTransmission(address);
   Wire.write(reg);
@@ -1816,7 +1816,7 @@ uint16_t Watchy::_readRegister(uint8_t address, uint8_t reg, uint8_t *data,
   return 0;
 }
 
-uint16_t Watchy::_writeRegister(uint8_t address, uint8_t reg, uint8_t *data,
+uint16_t PicoWatch::_writeRegister(uint8_t address, uint8_t reg, uint8_t *data,
                                 uint16_t len) {
   Wire.beginTransmission(address);
   Wire.write(reg);
@@ -1824,7 +1824,7 @@ uint16_t Watchy::_writeRegister(uint8_t address, uint8_t reg, uint8_t *data,
   return (0 != Wire.endTransmission());
 }
 
-void Watchy::_bmaConfig() {
+void PicoWatch::_bmaConfig() {
 
   if (sensor.begin(_readRegister, _writeRegister, delay) == false) {
     // fail to init BMA
@@ -1969,7 +1969,7 @@ String themedPage(const String &title, const String &bodyHtml) {
 }
 }  // namespace
 
-void Watchy::setupWifi() {
+void PicoWatch::setupWifi() {
   display.epd2.setBusyCallback(0); // temporarily disable lightsleep on busy
   WiFiManager wifiManager;
   // NOTE: deliberately no resetSettings() here (that call used to force a
@@ -2080,11 +2080,11 @@ void Watchy::setupWifi() {
   WiFi.mode(WIFI_OFF);
   btStop();
   // enable lightsleep on busy
-  display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
+  display.epd2.setBusyCallback(PicoWatchDisplay::busyCallback);
   guiState = APP_STATE;
 }
 
-void Watchy::_configModeCallback(WiFiManager *myWiFiManager) {
+void PicoWatch::_configModeCallback(WiFiManager *myWiFiManager) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -2100,7 +2100,7 @@ void Watchy::_configModeCallback(WiFiManager *myWiFiManager) {
   display.display(false); // full refresh
 }
 
-bool Watchy::connectWiFi() {
+bool PicoWatch::connectWiFi() {
   if (WL_CONNECT_FAILED ==
       WiFi.begin()) { // WiFi not setup, you can also use hard coded credentials
                       // with WiFi.begin(SSID,PASS);
@@ -2121,7 +2121,7 @@ bool Watchy::connectWiFi() {
   return WIFI_CONFIGURED;
 }
 /*
-void Watchy::showUpdateFW() {
+void PicoWatch::showUpdateFW() {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -2141,7 +2141,7 @@ void Watchy::showUpdateFW() {
   guiState = FW_UPDATE_STATE;
 }
 
-void Watchy::updateFWBegin() {
+void PicoWatch::updateFWBegin() {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -2149,14 +2149,14 @@ void Watchy::updateFWBegin() {
   display.setCursor(0, 30);
   display.println("Bluetooth Started");
   display.println(" ");
-  display.println("Watchy BLE OTA");
+  display.println("PicoWatch BLE OTA");
   display.println(" ");
   display.println("Waiting for");
   display.println("connection...");
   display.display(false); // full refresh
 
   BLE BT;
-  BT.begin("Watchy BLE OTA");
+  BT.begin("PicoWatch BLE OTA");
   int prevStatus = -1;
   int currentStatus;
 
@@ -2227,7 +2227,7 @@ void Watchy::updateFWBegin() {
   showMenu(menuIndex, false);
 }
 */
-void Watchy::showSyncNTP() {
+void PicoWatch::showSyncNTP() {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -2273,17 +2273,17 @@ void Watchy::showSyncNTP() {
   showSettingsMenu(settingsMenuIndex, false);
 }
 
-bool Watchy::syncNTP() { // NTP sync - call after connecting to WiFi and
+bool PicoWatch::syncNTP() { // NTP sync - call after connecting to WiFi and
                          // remember to turn it back off
   return syncNTP(gmtOffset,
                  settings.ntpServer.c_str());
 }
 
-bool Watchy::syncNTP(long gmt) {
+bool PicoWatch::syncNTP(long gmt) {
   return syncNTP(gmt, settings.ntpServer.c_str());
 }
 
-bool Watchy::syncNTP(long gmt, String ntpServer) {
+bool PicoWatch::syncNTP(long gmt, String ntpServer) {
   // NTP sync - call after connecting to
   // WiFi and remember to turn it back off
   WiFiUDP ntpUDP;

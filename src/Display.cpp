@@ -11,36 +11,36 @@
 //
 // Library: https://github.com/ZinggJM/GxEPD2
 //
-// The original code from the author has been slightly modified to improve the performance for Watchy Project:
+// The original code from the author has been slightly modified to improve the performance for PicoWatch Project:
 // Link: https://github.com/sqfmi/Watchy
 
 #include "Display.h"
 
 RTC_DATA_ATTR bool displayFullInit       = true;
 
-void WatchyDisplay::busyCallback(const void *) {
+void PicoWatchDisplay::busyCallback(const void *) {
   gpio_wakeup_enable((gpio_num_t)DISPLAY_BUSY, GPIO_INTR_LOW_LEVEL);
   esp_sleep_enable_gpio_wakeup();
   esp_light_sleep_start();
 }
 
-WatchyDisplay::WatchyDisplay() :
+PicoWatchDisplay::PicoWatchDisplay() :
   GxEPD2_EPD(DISPLAY_CS, DISPLAY_DC, DISPLAY_RES, DISPLAY_BUSY, HIGH, 10000000, WIDTH, HEIGHT, panel, hasColor, hasPartialUpdate, hasFastPartialUpdate)
 {
   // Setup callback and SPI by default
   #ifdef ARDUINO_ESP32S3_DEV
-  SPI.begin(WATCHY_V3_SCK,WATCHY_V3_MISO,WATCHY_V3_MOSI,WATCHY_V3_SS);
+  SPI.begin(PICOWATCH_V3_SCK,PICOWATCH_V3_MISO,PICOWATCH_V3_MOSI,PICOWATCH_V3_SS);
   #endif
   selectSPI(SPI, SPISettings(20000000, MSBFIRST, SPI_MODE0));
   setBusyCallback(busyCallback);
 }
 
-void WatchyDisplay::initWatchy() {
-  // Watchy default initialization
+void PicoWatchDisplay::initPicoWatch() {
+  // PicoWatch default initialization
   init(0, displayFullInit, 2, true);
 }
 
-void WatchyDisplay::asyncPowerOn() {
+void PicoWatchDisplay::asyncPowerOn() {
   // This is expensive if unused
   if (!waitingPowerOn && !_hibernating) {
     _InitDisplay();
@@ -48,7 +48,7 @@ void WatchyDisplay::asyncPowerOn() {
   }
 }
 
-void WatchyDisplay::setDarkBorder(bool dark) {
+void PicoWatchDisplay::setDarkBorder(bool dark) {
   if (_hibernating) return;
   darkBorder = dark;
   _startTransfer();
@@ -57,14 +57,14 @@ void WatchyDisplay::setDarkBorder(bool dark) {
   _endTransfer();
 }
 
-void WatchyDisplay::clearScreen(uint8_t value)
+void PicoWatchDisplay::clearScreen(uint8_t value)
 {
   writeScreenBuffer(value);
   refresh(true);
   writeScreenBufferAgain(value);
 }
 
-void WatchyDisplay::writeScreenBuffer(uint8_t value)
+void PicoWatchDisplay::writeScreenBuffer(uint8_t value)
 {
   if (!_using_partial_mode) _Init_Part();
   if (_initial_write) _writeScreenBuffer(0x26, value); // set previous
@@ -72,13 +72,13 @@ void WatchyDisplay::writeScreenBuffer(uint8_t value)
   _initial_write = false; // initial full screen buffer clean done
 }
 
-void WatchyDisplay::writeScreenBufferAgain(uint8_t value)
+void PicoWatchDisplay::writeScreenBufferAgain(uint8_t value)
 {
   if (!_using_partial_mode) _Init_Part();
   _writeScreenBuffer(0x24, value); // set current
 }
 
-void WatchyDisplay::_writeScreenBuffer(uint8_t command, uint8_t value)
+void PicoWatchDisplay::_writeScreenBuffer(uint8_t command, uint8_t value)
 {
   _startTransfer();
   _transferCommand(command);
@@ -89,23 +89,23 @@ void WatchyDisplay::_writeScreenBuffer(uint8_t command, uint8_t value)
   _endTransfer();
 }
 
-void WatchyDisplay::writeImage(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void PicoWatchDisplay::writeImage(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   _writeImage(0x24, bitmap, x, y, w, h, invert, mirror_y, pgm);
 }
 
-void WatchyDisplay::writeImageForFullRefresh(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void PicoWatchDisplay::writeImageForFullRefresh(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   _writeImage(0x26, bitmap, x, y, w, h, invert, mirror_y, pgm);
   _writeImage(0x24, bitmap, x, y, w, h, invert, mirror_y, pgm);
 }
 
-void WatchyDisplay::writeImageAgain(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void PicoWatchDisplay::writeImageAgain(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   _writeImage(0x24, bitmap, x, y, w, h, invert, mirror_y, pgm);
 }
 
-void WatchyDisplay::_writeImage(uint8_t command, const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void PicoWatchDisplay::_writeImage(uint8_t command, const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   if (_initial_write) writeScreenBuffer(); // initial full screen buffer clean
 #if defined(ESP8266) || defined(ESP32)
@@ -156,19 +156,19 @@ void WatchyDisplay::_writeImage(uint8_t command, const uint8_t bitmap[], int16_t
 #endif
 }
 
-void WatchyDisplay::writeImagePart(const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
+void PicoWatchDisplay::writeImagePart(const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
                                     int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   _writeImagePart(0x24, bitmap, x_part, y_part, w_bitmap, h_bitmap, x, y, w, h, invert, mirror_y, pgm);
 }
 
-void WatchyDisplay::writeImagePartAgain(const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
+void PicoWatchDisplay::writeImagePartAgain(const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
     int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   _writeImagePart(0x24, bitmap, x_part, y_part, w_bitmap, h_bitmap, x, y, w, h, invert, mirror_y, pgm);
 }
 
-void WatchyDisplay::_writeImagePart(uint8_t command, const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
+void PicoWatchDisplay::_writeImagePart(uint8_t command, const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
                                      int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   if (_initial_write) writeScreenBuffer(); // initial full screen buffer clean
@@ -226,7 +226,7 @@ void WatchyDisplay::_writeImagePart(uint8_t command, const uint8_t bitmap[], int
 #endif
 }
 
-void WatchyDisplay::writeImage(const uint8_t* black, const uint8_t* color, int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void PicoWatchDisplay::writeImage(const uint8_t* black, const uint8_t* color, int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   if (black)
   {
@@ -234,7 +234,7 @@ void WatchyDisplay::writeImage(const uint8_t* black, const uint8_t* color, int16
   }
 }
 
-void WatchyDisplay::writeImagePart(const uint8_t* black, const uint8_t* color, int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
+void PicoWatchDisplay::writeImagePart(const uint8_t* black, const uint8_t* color, int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
                                     int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   if (black)
@@ -243,7 +243,7 @@ void WatchyDisplay::writeImagePart(const uint8_t* black, const uint8_t* color, i
   }
 }
 
-void WatchyDisplay::writeNative(const uint8_t* data1, const uint8_t* data2, int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void PicoWatchDisplay::writeNative(const uint8_t* data1, const uint8_t* data2, int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   if (data1)
   {
@@ -251,14 +251,14 @@ void WatchyDisplay::writeNative(const uint8_t* data1, const uint8_t* data2, int1
   }
 }
 
-void WatchyDisplay::drawImage(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void PicoWatchDisplay::drawImage(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   writeImage(bitmap, x, y, w, h, invert, mirror_y, pgm);
   refresh(x, y, w, h);
   writeImageAgain(bitmap, x, y, w, h, invert, mirror_y, pgm);
 }
 
-void WatchyDisplay::drawImagePart(const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
+void PicoWatchDisplay::drawImagePart(const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
                                    int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   writeImagePart(bitmap, x_part, y_part, w_bitmap, h_bitmap, x, y, w, h, invert, mirror_y, pgm);
@@ -266,7 +266,7 @@ void WatchyDisplay::drawImagePart(const uint8_t bitmap[], int16_t x_part, int16_
   writeImagePartAgain(bitmap, x_part, y_part, w_bitmap, h_bitmap, x, y, w, h, invert, mirror_y, pgm);
 }
 
-void WatchyDisplay::drawImage(const uint8_t* black, const uint8_t* color, int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void PicoWatchDisplay::drawImage(const uint8_t* black, const uint8_t* color, int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   if (black)
   {
@@ -274,7 +274,7 @@ void WatchyDisplay::drawImage(const uint8_t* black, const uint8_t* color, int16_
   }
 }
 
-void WatchyDisplay::drawImagePart(const uint8_t* black, const uint8_t* color, int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
+void PicoWatchDisplay::drawImagePart(const uint8_t* black, const uint8_t* color, int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
                                    int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   if (black)
@@ -283,7 +283,7 @@ void WatchyDisplay::drawImagePart(const uint8_t* black, const uint8_t* color, in
   }
 }
 
-void WatchyDisplay::drawNative(const uint8_t* data1, const uint8_t* data2, int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void PicoWatchDisplay::drawNative(const uint8_t* data1, const uint8_t* data2, int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   if (data1)
   {
@@ -291,7 +291,7 @@ void WatchyDisplay::drawNative(const uint8_t* data1, const uint8_t* data2, int16
   }
 }
 
-void WatchyDisplay::refresh(bool partial_update_mode)
+void PicoWatchDisplay::refresh(bool partial_update_mode)
 {
   if (partial_update_mode) refresh(0, 0, WIDTH, HEIGHT);
   else
@@ -302,7 +302,7 @@ void WatchyDisplay::refresh(bool partial_update_mode)
   }
 }
 
-void WatchyDisplay::refresh(int16_t x, int16_t y, int16_t w, int16_t h)
+void PicoWatchDisplay::refresh(int16_t x, int16_t y, int16_t w, int16_t h)
 {
   if (_initial_refresh) return refresh(false); // initial update needs be full update
   // intersection with screen
@@ -322,12 +322,12 @@ void WatchyDisplay::refresh(int16_t x, int16_t y, int16_t w, int16_t h)
   _Update_Part();
 }
 
-void WatchyDisplay::powerOff()
+void PicoWatchDisplay::powerOff()
 {
   _PowerOff();
 }
 
-void WatchyDisplay::hibernate()
+void PicoWatchDisplay::hibernate()
 {
   //_PowerOff(); // Not needed before entering deep sleep
   if (_rst >= 0)
@@ -338,7 +338,7 @@ void WatchyDisplay::hibernate()
   }
 }
 
-void WatchyDisplay::_setPartialRamArea(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
+void PicoWatchDisplay::_setPartialRamArea(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
   _startTransfer();
   _transferCommand(0x11); // set ram entry mode
@@ -359,7 +359,7 @@ void WatchyDisplay::_setPartialRamArea(uint16_t x, uint16_t y, uint16_t w, uint1
   _endTransfer();
 }
 
-void WatchyDisplay::_PowerOnAsync()
+void PicoWatchDisplay::_PowerOnAsync()
 {
   if (_power_is_on)
     return;
@@ -372,7 +372,7 @@ void WatchyDisplay::_PowerOnAsync()
   _power_is_on = true;
 }
 
-void WatchyDisplay::_PowerOn()
+void PicoWatchDisplay::_PowerOn()
 {
   if (waitingPowerOn)
   {
@@ -390,7 +390,7 @@ void WatchyDisplay::_PowerOn()
   _power_is_on = true;
 }
 
-void WatchyDisplay::_PowerOff()
+void PicoWatchDisplay::_PowerOff()
 {
   if (waitingPowerOn)
   {
@@ -409,7 +409,7 @@ void WatchyDisplay::_PowerOff()
   _using_partial_mode = false;
 }
 
-void WatchyDisplay::_InitDisplay()
+void PicoWatchDisplay::_InitDisplay()
 {
   if (_hibernating) _reset();
 
@@ -443,7 +443,7 @@ void WatchyDisplay::_InitDisplay()
   _setPartialRamArea(0, 0, WIDTH, HEIGHT);
 }
 
-void WatchyDisplay::_reset()
+void PicoWatchDisplay::_reset()
 {
   // Call default method if not configured the same way
   if (_rst < 0 || !_pulldown_rst_mode) {
@@ -460,21 +460,21 @@ void WatchyDisplay::_reset()
   _hibernating = false;
 }
 
-void WatchyDisplay::_Init_Full()
+void PicoWatchDisplay::_Init_Full()
 {
   _InitDisplay();
   _PowerOn();
   _using_partial_mode = false;
 }
 
-void WatchyDisplay::_Init_Part()
+void PicoWatchDisplay::_Init_Part()
 {
   _InitDisplay();
   _PowerOn();
   _using_partial_mode = true;
 }
 
-void WatchyDisplay::_Update_Full()
+void PicoWatchDisplay::_Update_Full()
 {
   _startTransfer();
   _transferCommand(0x22);
@@ -485,7 +485,7 @@ void WatchyDisplay::_Update_Full()
   displayFullInit = false;
 }
 
-void WatchyDisplay::_Update_Part()
+void PicoWatchDisplay::_Update_Part()
 {
   _startTransfer();
   _transferCommand(0x22);
@@ -496,7 +496,7 @@ void WatchyDisplay::_Update_Part()
   _waitWhileBusy("_Update_Part", partial_refresh_time);
 }
 
-void WatchyDisplay::_transferCommand(uint8_t value)
+void PicoWatchDisplay::_transferCommand(uint8_t value)
 {
   if (_dc >= 0) digitalWrite(_dc, LOW);
   SPI.transfer(value);

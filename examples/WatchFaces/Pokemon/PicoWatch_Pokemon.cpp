@@ -1,6 +1,6 @@
-#include "Watchy_Pokemon.h"
+#include "PicoWatch_Pokemon.h"
 
-void WatchyPokemon::drawWatchFace(){
+void PicoWatchPokemon::drawWatchFace(){
     display.fillScreen(GxEPD_WHITE);
     display.drawBitmap(0, 0, pokemon, DISPLAY_WIDTH, DISPLAY_HEIGHT, GxEPD_BLACK);
     display.setTextColor(GxEPD_BLACK);

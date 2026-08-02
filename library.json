@@ -1,17 +1,21 @@
 {
-  "name": "Watchy",
+  "name": "PicoWatch",
   "version": "1.4.15",
-  "description": "Watchy - An Open Source E-Paper Watch by SQFMI",
+  "description": "PicoWatch - An Open Source E-Paper Watch, forked from SQFMI's Watchy",
   "authors": [
     {
       "name": "SQFMI",
       "url": "https://github.com/sqfmi"
+    },
+    {
+      "name": "UniqueDroid",
+      "url": "https://github.com/UniqueDroid"
     }
   ],
-  "homepage": "https://watchy.sqfmi.com",
+  "homepage": "https://github.com/UniqueDroid/PicoWatch",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sqfmi/Watchy.git"
+    "url": "https://github.com/UniqueDroid/PicoWatch.git"
   },
   "frameworks": "arduino",
   "platforms": ["espressif32"],

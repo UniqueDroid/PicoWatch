@@ -1,7 +1,7 @@
-#ifndef MULTI_FACE_WATCHY_H
-#define MULTI_FACE_WATCHY_H
+#ifndef MULTI_FACE_PICOWATCH_H
+#define MULTI_FACE_PICOWATCH_H
 
-#include <Watchy.h>
+#include <PicoWatch.h>
 
 // Combines all 8 example watchfaces into one firmware. Selecting "Change
 // Watchface" in the main menu (see changeWatchface()) opens a scrollable
@@ -14,7 +14,7 @@
 // facemario, facepokemon, facetetris, facestarry) since several of them
 // reused identical generic names (e.g. both MacPaint and Mario declared
 // "numbers", 7_SEG's icons.h used bare names like "battery"/"wifi").
-class MultiFaceWatchy : public Watchy {
+class MultiFacePicoWatch : public PicoWatch {
  public:
   static constexpr int FACE_COUNT = 8;
 
@@ -28,7 +28,7 @@ class MultiFaceWatchy : public Watchy {
   void drawStarryHorizon();
   void drawTetris();
 
-  // 7_SEG helpers (ported from Watchy_7_SEG.cpp)
+  // 7_SEG helpers (ported from PicoWatch_7_SEG.cpp)
   void draw7SegTime();
   void draw7SegDate();
   void draw7SegSteps();
@@ -43,7 +43,7 @@ class MultiFaceWatchy : public Watchy {
   void drawStarryCenteredString(const String &str, int x, int y, bool drawBg);
 
  public:
-  using Watchy::Watchy;
+  using PicoWatch::PicoWatch;
   void drawWatchFace() override;
   void changeWatchface() override;
   void onReset() override;

@@ -11,7 +11,7 @@
 //
 // Library: https://github.com/ZinggJM/GxEPD2
 //
-// The original code from the author has been slightly modified to improve the performance for Watchy Project:
+// The original code from the author has been slightly modified to improve the performance for PicoWatch Project:
 // Link: https://github.com/sqfmi/Watchy
 
 #pragma once
@@ -20,7 +20,7 @@
 #include "driver/gpio.h"
 #include "config.h"
 
-class WatchyDisplay : public GxEPD2_EPD
+class PicoWatchDisplay : public GxEPD2_EPD
 {
   public:
     // attributes
@@ -36,8 +36,8 @@ class WatchyDisplay : public GxEPD2_EPD
     static const uint16_t full_refresh_time = 2600; // ms, e.g. 2509602us
     static const uint16_t partial_refresh_time = 500; // ms, e.g. 457282us
     // constructor
-    WatchyDisplay();
-    void initWatchy();
+    PicoWatchDisplay();
+    void initPicoWatch();
     void setDarkBorder(bool darkBorder);
     void asyncPowerOn();
     void _PowerOnAsync();
