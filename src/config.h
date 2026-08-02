@@ -95,6 +95,14 @@
 #define WIFI_AP_TIMEOUT 60          // seconds with zero AP clients connected before the setup portal auto-shuts-down
 #define WIFI_AP_SSID    "Watchy AP"
 #define WIFI_STAY_CONNECTED_TIMEOUT 300  // seconds the connection stays up/reachable after a successful WiFi Setup, before auto-disconnecting to save battery
+// GitHub OTA update (Settings -> "Update via GitHub", and the WiFi web UI's
+// "GitHub Update" button both call Watchy::updateFromGithub(), which checks
+// this repo's latest release and downloads this asset by exact name).
+#define GITHUB_OTA_OWNER "UniqueDroid"
+#define GITHUB_OTA_REPO  "PicoWatch"
+#ifndef GITHUB_OTA_ASSET_NAME
+#define GITHUB_OTA_ASSET_NAME "AllFaces.ino-v30.bin"
+#endif
 // menu
 #define WATCHFACE_STATE     -1
 #define MAIN_MENU_STATE     0

@@ -1,6 +1,6 @@
 #include "Watchy.h"
 #include <Preferences.h>
-#include <mbedtls/sha256.h> // step 2/5 - linked but unused so far, see Watchy.h
+#include <mbedtls/sha256.h> // SHA256 verification for GitHub OTA - see Watchy::updateFromGithub()
 
 // Cached copy of the persisted alarm (see setAlarm()/onReset()) - survives
 // deep sleep like guiState/menuIndex; loaded from flash once on reset rather
@@ -349,7 +349,7 @@ void dispatchSettingsMenu(Watchy *w, int index) {
     w->setWeatherCity();
     break;
   case 8:
-    w->showUpdateViaGithubPlaceholder();
+    w->updateFromGithub();
     break;
   default:
     break;
@@ -1037,25 +1037,204 @@ void Watchy::showAbout() {
   guiState = APP_STATE;
 }
 
-// Step 1 of re-adding the WiFi/Update feature in isolated, individually
-// testable pieces (see project memory - the full feature caused an
-// unexplained menu/display regression and was fully reverted). This is a
-// placeholder for the real GitHub-update flow, deliberately using ONLY
-// existing display APIs (no new #includes, no WebServer/WiFiClientSecure/
-// Update/mbedtls) so this step tests just the settings-menu item bump in
-// isolation.
-void Watchy::showUpdateViaGithubPlaceholder() {
+// Step 5/5 of re-adding the WiFi/Update feature in isolated, individually
+// testable pieces (see project memory). Checks this repo's latest GitHub
+// release and, if newer than the running firmware, downloads + flashes
+// GITHUB_OTA_ASSET_NAME (SHA256-verified against the release asset's
+// digest) and reboots. Blocking, shows progress on the e-ink display.
+// Shared by the Settings menu's "Update via GitHub" item and the web UI's
+// "GitHub Update" button.
+void Watchy::updateFromGithub() {
+  guiState = APP_STATE;
+  display.epd2.setBusyCallback(0); // temporarily disable lightsleep on busy
+
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
   display.setTextColor(GxEPD_WHITE);
   display.setCursor(0, 30);
-  display.println("Update via GitHub");
-  display.println(" ");
-  display.println("Coming soon.");
-  display.display(false); // full refresh
+  display.println("Checking GitHub...");
+  display.display(false);
 
-  guiState = APP_STATE;
+  auto showResultAndReturn = [&](const char *line1, const char *line2 = nullptr) {
+    display.fillScreen(GxEPD_BLACK);
+    display.setCursor(0, 30);
+    display.println(line1);
+    if (line2) display.println(line2);
+    display.display(false);
+    delay(2500);
+    display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
+  };
+
+  if (!connectWiFi()) {
+    showResultAndReturn("WiFi not connected.");
+    return;
+  }
+
+  WiFiClientSecure apiClient;
+  apiClient.setInsecure();
+  HTTPClient https;
+  https.setConnectTimeout(5000);
+  String apiUrl = String("https://api.github.com/repos/") + GITHUB_OTA_OWNER + "/" +
+                  GITHUB_OTA_REPO + "/releases/latest";
+  https.begin(apiClient, apiUrl);
+  https.addHeader("User-Agent", "PicoWatch");
+  https.addHeader("Accept", "application/vnd.github+json");
+  const int code = https.GET();
+  if (code != 200) {
+    https.end();
+    showResultAndReturn("No release found", "or network error.");
+    return;
+  }
+  const String payload = https.getString();
+  https.end();
+
+  JSONVar release = JSON.parse(payload);
+  if (JSON.typeof(release) == "undefined") {
+    showResultAndReturn("Bad release data.");
+    return;
+  }
+
+  const String tag = (const char *)release["tag_name"];
+  int latestMajor = 0, latestMinor = 0, latestPatch = 0;
+  sscanf(tag.c_str(), "v%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
+  const bool newer =
+      (latestMajor > SOFTWARE_VERSION_MAJOR) ||
+      (latestMajor == SOFTWARE_VERSION_MAJOR && latestMinor > SOFTWARE_VERSION_MINOR) ||
+      (latestMajor == SOFTWARE_VERSION_MAJOR && latestMinor == SOFTWARE_VERSION_MINOR &&
+       latestPatch > SOFTWARE_VERSION_PATCH);
+
+  if (!newer) {
+    display.fillScreen(GxEPD_BLACK);
+    display.setCursor(0, 30);
+    display.println("Already on the");
+    display.println("latest version:");
+    display.println(tag);
+    display.display(false);
+    delay(2500);
+    display.epd2.setBusyCallback(WatchyDisplay::busyCallback);
+    return;
+  }
+
+  JSONVar assets = release["assets"];
+  String downloadUrl;
+  String digestHex; // hex part of the asset's "sha256:<hex>" digest field, if present
+  for (int i = 0; i < assets.length(); i++) {
+    const char *name = (const char *)assets[i]["name"];
+    if (strcmp(name, GITHUB_OTA_ASSET_NAME) == 0) {
+      downloadUrl = (const char *)assets[i]["browser_download_url"];
+      if (JSON.typeof(assets[i]["digest"]) != "undefined") {
+        const String digest = (const char *)assets[i]["digest"];
+        const int colon = digest.indexOf(':');
+        digestHex = (colon >= 0) ? digest.substring(colon + 1) : digest;
+      }
+      break;
+    }
+  }
+
+  if (downloadUrl.length() == 0) {
+    showResultAndReturn("Asset not found", "in latest release.");
+    return;
+  }
+
+  display.fillScreen(GxEPD_BLACK);
+  display.setCursor(0, 30);
+  display.println("Downloading:");
+  display.println(tag);
+  display.println(" ");
+  display.println("0%");
+  display.display(false);
+
+  WiFiClientSecure dlClient;
+  dlClient.setInsecure();
+  HTTPClient dl;
+  dl.setConnectTimeout(5000);
+  dl.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  dl.begin(dlClient, downloadUrl);
+  dl.addHeader("User-Agent", "PicoWatch");
+  const int dlCode = dl.GET();
+  if (dlCode != 200) {
+    dl.end();
+    showResultAndReturn("Download failed.");
+    return;
+  }
+
+  const int total = dl.getSize(); // -1 if unknown
+  if (!Update.begin(total > 0 ? total : UPDATE_SIZE_UNKNOWN)) {
+    dl.end();
+    showResultAndReturn("Not enough space", "for update.");
+    return;
+  }
+
+  mbedtls_sha256_context sha;
+  mbedtls_sha256_init(&sha);
+  mbedtls_sha256_starts(&sha, 0);
+
+  WiFiClient *stream = dl.getStreamPtr();
+  uint8_t buf[1024];
+  int written = 0;
+  int lastShownPercent = -1;
+  unsigned long lastByteAt = millis();
+  while (dl.connected() && (total < 0 || written < total)) {
+    const size_t avail = stream->available();
+    if (avail) {
+      const size_t toRead = avail > sizeof(buf) ? sizeof(buf) : avail;
+      const size_t r = stream->readBytes(buf, toRead);
+      if (r == 0) break;
+      Update.write(buf, r);
+      mbedtls_sha256_update(&sha, buf, r);
+      written += r;
+      lastByteAt = millis();
+      if (total > 0) {
+        const int percent = (written * 100) / total;
+        if (percent != lastShownPercent) {
+          lastShownPercent = percent;
+          display.fillRect(0, 60, 200, 20, GxEPD_BLACK);
+          display.setCursor(0, 75);
+          display.print(percent);
+          display.println("%");
+          display.display(true); // partial refresh
+        }
+      }
+    } else {
+      if (millis() - lastByteAt > 15000) break; // stalled
+      delay(2);
+    }
+  }
+  dl.end();
+
+  uint8_t hash[32];
+  mbedtls_sha256_finish(&sha, hash);
+  mbedtls_sha256_free(&sha);
+
+  const bool sizeOk = (total <= 0) || (written == total);
+  bool digestOk = true;
+  if (digestHex.length() == 64) {
+    uint8_t expected[32];
+    for (int i = 0; i < 32; i++) {
+      expected[i] = (uint8_t)strtoul(digestHex.substring(i * 2, i * 2 + 2).c_str(), nullptr, 16);
+    }
+    digestOk = (memcmp(hash, expected, 32) == 0);
+  }
+
+  if (!sizeOk || !digestOk) {
+    Update.abort();
+    showResultAndReturn("Update verify", "failed - aborted.");
+    return;
+  }
+
+  if (!Update.end(true) || Update.hasError()) {
+    showResultAndReturn("Update failed", "while finalizing.");
+    return;
+  }
+
+  display.fillScreen(GxEPD_BLACK);
+  display.setCursor(0, 30);
+  display.println("Update verified.");
+  display.println("Rebooting...");
+  display.display(false);
+  delay(1000);
+  ESP.restart();
 }
 
 void Watchy::showBuzz() {
@@ -1844,8 +2023,18 @@ void Watchy::setupWifi() {
       String body = "<div class='msg S'><strong>Connected</strong> to " + String(lastSSID) + "</div>"
                     "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
                     "<input type='file' name='update' accept='.bin'>"
-                    "<button type='submit'>Upload &amp; Flash</button></form>";
+                    "<button type='submit'>Upload &amp; Flash</button></form>"
+                    "<hr>"
+                    "<form method='POST' action='/github-update'>"
+                    "<button type='submit'>GitHub Update</button></form>";
       server.send(200, "text/html", themedPage("PicoWatch", body));
+    });
+    server.on("/github-update", HTTP_POST, [&]() {
+      server.send(200, "text/html",
+                   themedPage("GitHub Update",
+                              "<div class='msg P'>Starting GitHub update check&hellip;<br/>"
+                              "Watch the device screen for progress.</div>"));
+      updateFromGithub(); // blocking; reboots on success, falls through here on failure
     });
     server.on(
         "/file-update", HTTP_POST,

@@ -6,8 +6,8 @@
 #include <HTTPClient.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
-// Pulled in for later steps (File/GitHub Update) - unused so far, see
-// Watchy.cpp for why the WiFi setup screen itself keeps using WiFiManager.
+// WiFi setup itself still uses WiFiManager (see Watchy.cpp); these back the
+// post-connect status/File-Update/GitHub-Update web server instead.
 #include <WebServer.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
@@ -108,9 +108,12 @@ public:
   void setWeatherCity(); // interactive 7-digit OpenWeatherMap city ID picker, persisted in flash (NVS)
   void setupWifi();
   bool connectWiFi();
-  // Step 1 placeholder for the WiFi/Update rework - see Watchy.cpp for why
-  // this is being reintroduced in isolated, individually-testable pieces.
-  void showUpdateViaGithubPlaceholder();
+  // Checks this repo's latest GitHub release and, if newer than the running
+  // firmware, downloads + flashes GITHUB_OTA_ASSET_NAME (SHA256-verified
+  // against the release asset's digest) and reboots. Blocking, shows
+  // progress on the e-ink display. Shared by the Settings menu's "Update via
+  // GitHub" item and the web UI's "GitHub Update" button.
+  void updateFromGithub();
   weatherData getWeatherData();
   void updateFWBegin();
 
