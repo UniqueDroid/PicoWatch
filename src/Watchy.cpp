@@ -1771,7 +1771,12 @@ constexpr const char *kWifiPortalTheme =
 void Watchy::setupWifi() {
   display.epd2.setBusyCallback(0); // temporarily disable lightsleep on busy
   WiFiManager wifiManager;
-  wifiManager.resetSettings();
+  // NOTE: deliberately no resetSettings() here (that call used to force a
+  // full reconfigure on every single "Setup WiFi" visit, wiping saved
+  // credentials each time). autoConnect() already does the right thing on
+  // its own: try the saved network first, only fall back to the AP portal
+  // if that fails - so once configured, revisiting this screen just
+  // reconnects and shows the current IP instead of asking to set up again.
   wifiManager.setTimeout(WIFI_AP_TIMEOUT);
   wifiManager.setAPCallback(_configModeCallback);
   wifiManager.setCustomHeadElement(kWifiPortalTheme);
