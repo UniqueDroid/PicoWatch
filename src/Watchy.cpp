@@ -1790,7 +1790,8 @@ void Watchy::setupWifi() {
   // bottom edge) - looks like a blank/black screen since nothing visible
   // gets drawn. Every other screen in this file sets this explicitly.
   display.setCursor(0, 30);
-  if (!wifiManager.autoConnect(WIFI_AP_SSID)) { // WiFi setup failed
+  bool connected = wifiManager.autoConnect(WIFI_AP_SSID);
+  if (!connected) { // WiFi setup failed
     display.println("Setup failed &");
     display.println("timed out!");
   } else {
@@ -1798,11 +1799,29 @@ void Watchy::setupWifi() {
     display.println(WiFi.SSID());
 		display.println("Local IP:");
 		display.println(WiFi.localIP());
+    display.println(" ");
+    display.println("Back to disconnect");
     weatherIntervalCounter = -1; // Reset to force weather to be read again
     lastIPAddress = WiFi.localIP();
     WiFi.SSID().toCharArray(lastSSID, 30);
   }
   display.display(false); // full refresh
+
+  if (connected) {
+    // Keep the connection (and IP) actually reachable for a while instead
+    // of tearing it straight back down - otherwise the display still says
+    // "Connected to..." but the radio is already off underneath it, so
+    // pinging the shown IP only works for the couple of seconds before
+    // this point. Exits early on Back, or after WIFI_STAY_CONNECTED_TIMEOUT
+    // seconds of nobody touching it.
+    pinMode(BACK_BTN_PIN, INPUT);
+    unsigned long connectedAt = millis();
+    while (millis() - connectedAt < (unsigned long)WIFI_STAY_CONNECTED_TIMEOUT * 1000UL) {
+      if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) break;
+      delay(50);
+    }
+  }
+
   // turn off radios
   WiFi.mode(WIFI_OFF);
   btStop();

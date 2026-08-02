@@ -92,8 +92,9 @@
 #define DISPLAY_WIDTH 200
 #define DISPLAY_HEIGHT 200
 // wifi
-#define WIFI_AP_TIMEOUT 60
+#define WIFI_AP_TIMEOUT 60          // seconds with zero AP clients connected before the setup portal auto-shuts-down
 #define WIFI_AP_SSID    "Watchy AP"
+#define WIFI_STAY_CONNECTED_TIMEOUT 300  // seconds the connection stays up/reachable after a successful WiFi Setup, before auto-disconnecting to save battery
 // menu
 #define WATCHFACE_STATE     -1
 #define MAIN_MENU_STATE     0
