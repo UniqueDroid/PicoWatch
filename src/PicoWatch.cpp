@@ -1527,6 +1527,7 @@ void PicoWatch::setWeatherCity() {
 
   display.setFullWindow();
 
+  bool cancelled = false;
   while (1) {
     if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
       setIndex++;
@@ -1537,6 +1538,12 @@ void PicoWatch::setWeatherCity() {
     if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
       if (setIndex != 0) {
         setIndex--;
+      } else {
+        // Back on the first digit exits without saving - previously Back
+        // only ever moved between digits, so there was no way to leave
+        // this screen without brute-forcing through all 7 digits via Menu.
+        cancelled = true;
+        break;
       }
     }
 
@@ -1567,15 +1574,23 @@ void PicoWatch::setWeatherCity() {
       display.print(digits[i]);
     }
 
+    // Shifted up 15px from the original 150/170/190 - the last line was
+    // sitting right at the 200px display edge and getting clipped/hard to
+    // read.
     display.setTextColor(GxEPD_WHITE);
-    display.setCursor(5, 150);
+    display.setCursor(5, 135);
     display.println("Find your city ID at");
-    display.setCursor(5, 170);
+    display.setCursor(5, 155);
     display.println("openweathermap.org");
-    display.setCursor(5, 190);
+    display.setCursor(5, 175);
     display.println("/current#cityid");
 
     display.display(true); // partial refresh
+  }
+
+  if (cancelled) {
+    showSettingsMenu(settingsMenuIndex, false);
+    return;
   }
 
   char buf[kDigitCount + 1];
