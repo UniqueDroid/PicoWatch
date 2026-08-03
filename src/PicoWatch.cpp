@@ -2034,17 +2034,72 @@ void PicoWatch::setupWifi() {
     pinMode(BACK_BTN_PIN, INPUT);
     WebServer server(80);
 
+    // Login gate for the pages below, same idea as pfsense-status-esp32's
+    // menu password: a form login, then a session tied to the client's IP
+    // for WEB_MENU_SESSION_MS - not HTTP Basic Auth, not a cookie. Only
+    // covers this WebServer's own pages (this status/File-Update/GitHub-
+    // Update page); the WiFiManager join screen above is untouched stock
+    // WiFiManager and stays unprotected, since replicating pfsense-status-
+    // esp32's login there would mean vendoring its ~4000-line patched
+    // WiFiManager fork instead of the registry one.
+    unsigned long authUntil = 0;
+    IPAddress authIp;
+    auto isAuthed = [&]() {
+      return authUntil != 0 && millis() <= authUntil && server.client().remoteIP() == authIp;
+    };
+    auto requireAuth = [&]() {
+      if (isAuthed()) return true;
+      server.sendHeader("Location", "/login", true);
+      server.send(302, "text/plain", "");
+      return false;
+    };
+    auto loginForm = [](const char *notice) {
+      String body;
+      if (notice) {
+        body += "<div class='msg D'>";
+        body += notice;
+        body += "</div>";
+      }
+      body += "<form method='POST' action='/login'>"
+              "<input type='password' name='p' placeholder='Password'>"
+              "<button type='submit'>Login</button></form>";
+      return body;
+    };
+
+    server.on("/login", HTTP_GET, [&]() {
+      server.send(200, "text/html", themedPage("Login", loginForm(nullptr)));
+    });
+    server.on("/login", HTTP_POST, [&]() {
+      if (server.arg("p") == WEB_MENU_PASSWORD_DEFAULT) {
+        authUntil = millis() + WEB_MENU_SESSION_MS;
+        authIp = server.client().remoteIP();
+        server.sendHeader("Location", "/", true);
+        server.send(302, "text/plain", "");
+      } else {
+        server.send(200, "text/html", themedPage("Login", loginForm("Wrong password.")));
+      }
+    });
+    server.on("/logout", HTTP_GET, [&]() {
+      authUntil = 0;
+      server.sendHeader("Location", "/login", true);
+      server.send(302, "text/plain", "");
+    });
+
     server.on("/", HTTP_GET, [&]() {
+      if (!requireAuth()) return;
       String body = "<div class='msg S'><strong>Connected</strong> to " + String(lastSSID) + "</div>"
+                    "<h3>Firmware Update</h3><hr>"
+                    "<form method='POST' action='/github-update'>"
+                    "<button type='submit'>Check GitHub &amp; Flash</button></form>"
+                    "<hr>"
                     "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
                     "<input type='file' name='update' accept='.bin'>"
-                    "<button type='submit'>Upload &amp; Flash</button></form>"
-                    "<hr>"
-                    "<form method='POST' action='/github-update'>"
-                    "<button type='submit'>GitHub Update</button></form>";
+                    "<button type='submit'>Upload &amp; Flash (File Update)</button></form>"
+                    "<hr><a href='/logout'>Logout</a>";
       server.send(200, "text/html", themedPage("PicoWatch", body));
     });
     server.on("/github-update", HTTP_POST, [&]() {
+      if (!requireAuth()) return;
       server.send(200, "text/html",
                    themedPage("GitHub Update",
                               "<div class='msg P'>Starting GitHub update check&hellip;<br/>"
@@ -2054,6 +2109,7 @@ void PicoWatch::setupWifi() {
     server.on(
         "/file-update", HTTP_POST,
         [&]() {
+          if (!requireAuth()) return;
           server.sendHeader("Connection", "close");
           const bool ok = !Update.hasError();
           server.send(200, "text/html",
@@ -2066,8 +2122,16 @@ void PicoWatch::setupWifi() {
           }
         },
         [&]() {
+          // The upload handler runs (and streams straight into the OTA
+          // partition) BEFORE the main handler above gets a chance to run
+          // requireAuth() - checking auth only there would let an
+          // unauthenticated request's file bytes reach Update.write()
+          // regardless of the final response. Gate it here too.
+          static bool uploadAuthorized = false;
           HTTPUpload &upload = server.upload();
           if (upload.status == UPLOAD_FILE_START) {
+            uploadAuthorized = isAuthed();
+            if (!uploadAuthorized) return;
             display.fillScreen(GxEPD_BLACK);
             display.setCursor(0, 30);
             display.println("Receiving update");
@@ -2075,9 +2139,9 @@ void PicoWatch::setupWifi() {
             display.display(false);
             Update.begin(UPDATE_SIZE_UNKNOWN);
           } else if (upload.status == UPLOAD_FILE_WRITE) {
-            Update.write(upload.buf, upload.currentSize);
+            if (uploadAuthorized) Update.write(upload.buf, upload.currentSize);
           } else if (upload.status == UPLOAD_FILE_END) {
-            Update.end(true);
+            if (uploadAuthorized) Update.end(true);
           }
         });
     server.begin();

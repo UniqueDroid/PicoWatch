@@ -95,6 +95,10 @@
 #define WIFI_AP_TIMEOUT 60          // seconds with zero AP clients connected before the setup portal auto-shuts-down
 #define WIFI_AP_SSID    "PicoWatch AP"
 #define WIFI_STAY_CONNECTED_TIMEOUT 300  // seconds the connection stays up/reachable after a successful WiFi Setup, before auto-disconnecting to save battery
+// Web UI login (status/File-Update/GitHub-Update page), same idea as
+// pfsense-status-esp32's menu password - IP+timeout session, not Basic Auth.
+#define WEB_MENU_PASSWORD_DEFAULT "clockmenu123"
+#define WEB_MENU_SESSION_MS 3600000UL  // 1 hour, matches pfsense-status-esp32
 // GitHub OTA update (Settings -> "Update via GitHub", and the WiFi web UI's
 // "GitHub Update" button both call PicoWatch::updateFromGithub(), which checks
 // this repo's latest release and downloads this asset by exact name).
