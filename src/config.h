@@ -115,8 +115,20 @@
 #define SETTINGS_MENU_STATE 3
 #define MENU_HEIGHT     25
 #define MENU_LENGTH     6           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Weather, Settings
-#define SETTINGS_MENU_LENGTH 9      // About, Vibrate, Accelerometer, Set Time, WiFi, Sync NTP, Set Timezone, Set City, Update via GitHub
-#define SETTINGS_MENU_ITEM_HEIGHT 22  // tighter than MENU_HEIGHT so all 9 rows still fit within DISPLAY_HEIGHT (200px)
+#define SETTINGS_MENU_LENGTH 10     // About, Vibrate, Accelerometer, Set Time, WiFi, Sync NTP, Set Timezone, Set City, Update via GitHub, Button Settings
+#define SETTINGS_MENU_ITEM_HEIGHT 19  // tighter than MENU_HEIGHT so all 10 rows still fit within DISPLAY_HEIGHT (200px)
+// button remapping (PicoWatch::showButtonSettings()) - Menu/Back swap plus
+// short/long-press action pickers for Up/Down while on the watchface
+// (previously unused there). Long-press threshold in ms.
+#define LONG_PRESS_MS 600
+#define WATCHFACE_ACTION_NONE            0
+#define WATCHFACE_ACTION_SETTINGS        1
+#define WATCHFACE_ACTION_CHANGE_WATCHFACE 2
+#define WATCHFACE_ACTION_WEATHER         3
+#define WATCHFACE_ACTION_STOPWATCH       4
+#define WATCHFACE_ACTION_ALARM           5
+#define WATCHFACE_ACTION_COUNT           6
+#define BUTTON_SETTINGS_FIELD_COUNT      5  // swap, up-short, up-long, down-short, down-long
 // alarm (PicoWatch::setAlarm())
 #define SET_ALARM_HOUR    0
 #define SET_ALARM_MINUTE  1

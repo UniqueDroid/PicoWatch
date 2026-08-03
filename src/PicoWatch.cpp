@@ -19,6 +19,15 @@ RTC_DATA_ATTR bool alarmEnabled;
 // vanish after the very next sleep cycle.
 RTC_DATA_ATTR char weatherCityID[12];
 
+// Button remapping (see PicoWatch::showButtonSettings()) - cached copies of
+// what's persisted in flash (NVS), loaded once on reset like the alarm
+// above rather than re-reading NVS on every single button press.
+RTC_DATA_ATTR bool menuBackSwapped;
+RTC_DATA_ATTR uint8_t watchfaceUpShortAction;
+RTC_DATA_ATTR uint8_t watchfaceUpLongAction;
+RTC_DATA_ATTR uint8_t watchfaceDownShortAction;
+RTC_DATA_ATTR uint8_t watchfaceDownLongAction;
+
 namespace {
 // Manual timezone override, persisted in flash (NVS) so it survives power
 // loss, not just deep sleep (unlike the RTC_DATA_ATTR globals below). Once
@@ -120,6 +129,45 @@ void saveAlarm() {
   prefs.putUChar(kPrefsAlarmMinuteKey, alarmMinute);
   prefs.putBool(kPrefsAlarmEnabledKey, alarmEnabled);
   prefs.end();
+}
+
+constexpr const char *kPrefsBtnSwapKey = "btnSwap";
+constexpr const char *kPrefsUpShortKey = "upShort";
+constexpr const char *kPrefsUpLongKey = "upLong";
+constexpr const char *kPrefsDownShortKey = "dnShort";
+constexpr const char *kPrefsDownLongKey = "dnLong";
+
+void loadButtonSettings() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  menuBackSwapped = prefs.getBool(kPrefsBtnSwapKey, false);
+  watchfaceUpShortAction = prefs.getUChar(kPrefsUpShortKey, WATCHFACE_ACTION_NONE);
+  watchfaceUpLongAction = prefs.getUChar(kPrefsUpLongKey, WATCHFACE_ACTION_NONE);
+  watchfaceDownShortAction = prefs.getUChar(kPrefsDownShortKey, WATCHFACE_ACTION_NONE);
+  watchfaceDownLongAction = prefs.getUChar(kPrefsDownLongKey, WATCHFACE_ACTION_NONE);
+  prefs.end();
+}
+
+void saveButtonSettings() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putBool(kPrefsBtnSwapKey, menuBackSwapped);
+  prefs.putUChar(kPrefsUpShortKey, watchfaceUpShortAction);
+  prefs.putUChar(kPrefsUpLongKey, watchfaceUpLongAction);
+  prefs.putUChar(kPrefsDownShortKey, watchfaceDownShortAction);
+  prefs.putUChar(kPrefsDownLongKey, watchfaceDownLongAction);
+  prefs.end();
+}
+
+const char *watchfaceActionName(uint8_t action) {
+  switch (action) {
+  case WATCHFACE_ACTION_SETTINGS: return "Settings";
+  case WATCHFACE_ACTION_CHANGE_WATCHFACE: return "Change Watchface";
+  case WATCHFACE_ACTION_WEATHER: return "Weather";
+  case WATCHFACE_ACTION_STOPWATCH: return "Stopwatch";
+  case WATCHFACE_ACTION_ALARM: return "Alarm";
+  default: return "None";
+  }
 }
 
 constexpr const char *kPrefsCityIdKey = "cityId";
@@ -262,6 +310,7 @@ void PicoWatch::init(String datetime) {
     }
     loadAlarm();
     loadWeatherCityID(settings.cityID);
+    loadButtonSettings();
     RTC.read(currentTime);
     RTC.read(bootTime);
     showWatchFace(false); // full update on reset
@@ -371,6 +420,34 @@ void dispatchSettingsMenu(PicoWatch *w, int index) {
   case 8:
     w->updateFromGithub();
     break;
+  case 9:
+    w->showButtonSettings();
+    break;
+  default:
+    break;
+  }
+}
+
+// Dispatches a watchface-screen Up/Down press (short or long) to whatever
+// action the user assigned it via showButtonSettings() - see config.h's
+// WATCHFACE_ACTION_* constants. ACTION_NONE is a deliberate no-op.
+void dispatchWatchfaceAction(PicoWatch *w, uint8_t action) {
+  switch (action) {
+  case WATCHFACE_ACTION_SETTINGS:
+    w->showSettingsMenu(settingsMenuIndex, false);
+    break;
+  case WATCHFACE_ACTION_CHANGE_WATCHFACE:
+    w->changeWatchface();
+    break;
+  case WATCHFACE_ACTION_WEATHER:
+    w->showWeatherForecast();
+    break;
+  case WATCHFACE_ACTION_STOPWATCH:
+    w->showStopwatch();
+    break;
+  case WATCHFACE_ACTION_ALARM:
+    w->setAlarm();
+    break;
   default:
     break;
   }
@@ -379,8 +456,16 @@ void dispatchSettingsMenu(PicoWatch *w, int index) {
 
 void PicoWatch::handleButtonPress() {
   uint64_t wakeupBit = esp_sleep_get_ext1_wakeup_status();
+  // Menu/Back swap (see showButtonSettings()) - only affects top-level menu
+  // navigation (this function); individual screens like setTime()/setAlarm()
+  // still read the physical MENU_BTN_PIN/BACK_BTN_PIN directly for their own
+  // field-to-field navigation, unaffected by this setting.
+  const uint64_t logicalMenuMask = menuBackSwapped ? BACK_BTN_MASK : MENU_BTN_MASK;
+  const uint64_t logicalBackMask = menuBackSwapped ? MENU_BTN_MASK : BACK_BTN_MASK;
+  const int logicalMenuPin = menuBackSwapped ? BACK_BTN_PIN : MENU_BTN_PIN;
+  const int logicalBackPin = menuBackSwapped ? MENU_BTN_PIN : BACK_BTN_PIN;
   // Menu Button
-  if (wakeupBit & MENU_BTN_MASK) {
+  if (wakeupBit & logicalMenuMask) {
     if (guiState ==
         WATCHFACE_STATE) { // enter menu state if coming from watch face
       showMenu(menuIndex, false);
@@ -401,7 +486,7 @@ void PicoWatch::handleButtonPress() {
     }*/
   }
   // Back Button
-  else if (wakeupBit & BACK_BTN_MASK) {
+  else if (wakeupBit & logicalBackMask) {
     if (guiState == MAIN_MENU_STATE) { // exit to watch face if already in menu
       RTC.read(currentTime);
       showWatchFace(false);
@@ -430,6 +515,16 @@ void PicoWatch::handleButtonPress() {
       }
       showSettingsMenu(settingsMenuIndex, true);
     } else if (guiState == WATCHFACE_STATE) {
+      // User-assignable short/long press action (see showButtonSettings()).
+      // Measure how long the button that just woke us stays held, then
+      // dispatch - same "return immediately, don't fall into the fast-menu
+      // loop" reasoning as the Menu/Back WATCHFACE_STATE cases above, since
+      // the dispatched action manages its own guiState/rendering.
+      pinMode(UP_BTN_PIN, INPUT);
+      unsigned long pressStart = millis();
+      while (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) delay(10);
+      const bool isLong = (millis() - pressStart) >= LONG_PRESS_MS;
+      dispatchWatchfaceAction(this, isLong ? watchfaceUpLongAction : watchfaceUpShortAction);
       return;
     }
   }
@@ -448,6 +543,13 @@ void PicoWatch::handleButtonPress() {
       }
       showSettingsMenu(settingsMenuIndex, true);
     } else if (guiState == WATCHFACE_STATE) {
+      // See the identical Up-button case just above for why this measures
+      // press duration instead of returning immediately.
+      pinMode(DOWN_BTN_PIN, INPUT);
+      unsigned long pressStart = millis();
+      while (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) delay(10);
+      const bool isLong = (millis() - pressStart) >= LONG_PRESS_MS;
+      dispatchWatchfaceAction(this, isLong ? watchfaceDownLongAction : watchfaceDownShortAction);
       return;
     }
   }
@@ -463,7 +565,7 @@ void PicoWatch::handleButtonPress() {
     if (millis() - lastTimeout > 5000) {
       timeout = true;
     } else {
-      if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      if (digitalRead(logicalMenuPin) == ACTIVE_LOW) {
         lastTimeout = millis();
         if (guiState == MAIN_MENU_STATE) { // if already in menu, then select menu item
           dispatchTopMenu(this, menuIndex);
@@ -474,7 +576,7 @@ void PicoWatch::handleButtonPress() {
         } /*else if (guiState == FW_UPDATE_STATE) {
           updateFWBegin();
         }*/
-      } else if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      } else if (digitalRead(logicalBackPin) == ACTIVE_LOW) {
         lastTimeout = millis();
         if (guiState ==
             MAIN_MENU_STATE) { // exit to watch face if already in menu
@@ -594,13 +696,13 @@ void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
   const char *settingsMenuItems[] = {"About PicoWatch", "Vibrate Motor", "Show Accelerometer",
                                       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
                                       "Sync NTP",     "Set Timezone", "Set City",
-                                      "Update via GitHub"};
+                                      "Update via GitHub", "Button Settings"};
   for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
     yPos = SETTINGS_MENU_ITEM_HEIGHT + (SETTINGS_MENU_ITEM_HEIGHT * i);
     display.setCursor(0, yPos);
     if (i == settingsMenuIndex) {
       display.getTextBounds(settingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 10, 200, h + 12, GxEPD_WHITE);
+      display.fillRect(x1 - 1, y1 - 8, 200, h + 6, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
       display.println(settingsMenuItems[i]);
     } else {
@@ -627,13 +729,13 @@ void PicoWatch::showFastSettingsMenu(byte settingsMenuIndex) {
   const char *settingsMenuItems[] = {"About PicoWatch", "Vibrate Motor", "Show Accelerometer",
                                       "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
                                       "Sync NTP",     "Set Timezone", "Set City",
-                                      "Update via GitHub"};
+                                      "Update via GitHub", "Button Settings"};
   for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
     yPos = SETTINGS_MENU_ITEM_HEIGHT + (SETTINGS_MENU_ITEM_HEIGHT * i);
     display.setCursor(0, yPos);
     if (i == settingsMenuIndex) {
       display.getTextBounds(settingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 10, 200, h + 12, GxEPD_WHITE);
+      display.fillRect(x1 - 1, y1 - 8, 200, h + 6, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
       display.println(settingsMenuItems[i]);
     } else {
@@ -907,6 +1009,114 @@ void PicoWatch::setAlarm() {
   saveAlarm();
 
   showMenu(menuIndex, false);
+}
+
+void PicoWatch::showButtonSettings() {
+  guiState = APP_STATE;
+
+  bool swapped = menuBackSwapped;
+  uint8_t upShort = watchfaceUpShortAction;
+  uint8_t upLong = watchfaceUpLongAction;
+  uint8_t downShort = watchfaceDownShortAction;
+  uint8_t downLong = watchfaceDownLongAction;
+
+  int8_t setIndex = 0;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  // Same button-bounce hazard as the other "Menu confirms immediately"
+  // screens - Menu was just used to select this from the settings menu.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  bool cancelled = false;
+  while (1) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      setIndex++;
+      if (setIndex > BUTTON_SETTINGS_FIELD_COUNT - 1) {
+        break;
+      }
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      if (setIndex != 0) {
+        setIndex--;
+      } else {
+        // Back on the first field exits without saving - see the identical
+        // fix in setWeatherCity() for why this matters.
+        cancelled = true;
+        break;
+      }
+    }
+
+    blink = 1 - blink;
+
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      switch (setIndex) {
+      case 0: swapped = !swapped; break;
+      case 1: upShort = (upShort + 1) % WATCHFACE_ACTION_COUNT; break;
+      case 2: upLong = (upLong + 1) % WATCHFACE_ACTION_COUNT; break;
+      case 3: downShort = (downShort + 1) % WATCHFACE_ACTION_COUNT; break;
+      case 4: downLong = (downLong + 1) % WATCHFACE_ACTION_COUNT; break;
+      default: break;
+      }
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      switch (setIndex) {
+      case 0: swapped = !swapped; break;
+      case 1: upShort = (upShort + WATCHFACE_ACTION_COUNT - 1) % WATCHFACE_ACTION_COUNT; break;
+      case 2: upLong = (upLong + WATCHFACE_ACTION_COUNT - 1) % WATCHFACE_ACTION_COUNT; break;
+      case 3: downShort = (downShort + WATCHFACE_ACTION_COUNT - 1) % WATCHFACE_ACTION_COUNT; break;
+      case 4: downLong = (downLong + WATCHFACE_ACTION_COUNT - 1) % WATCHFACE_ACTION_COUNT; break;
+      default: break;
+      }
+    }
+
+    display.fillScreen(GxEPD_BLACK);
+    display.setTextColor(GxEPD_WHITE);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(10, 20);
+    display.println("Button Settings");
+
+    const char *labels[BUTTON_SETTINGS_FIELD_COUNT] = {
+        "Swap Menu/Back:", "Up (short):", "Up (long):", "Down (short):", "Down (long):"};
+    const char *values[BUTTON_SETTINGS_FIELD_COUNT] = {
+        swapped ? "Yes" : "No", watchfaceActionName(upShort), watchfaceActionName(upLong),
+        watchfaceActionName(downShort), watchfaceActionName(downLong)};
+
+    for (int i = 0; i < BUTTON_SETTINGS_FIELD_COUNT; i++) {
+      const int yPos = 55 + i * 28;
+      display.setTextColor(GxEPD_WHITE);
+      display.setCursor(0, yPos);
+      display.println(labels[i]);
+      display.setCursor(10, yPos + 14);
+      if (i == setIndex) {
+        display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+      }
+      display.println(values[i]);
+    }
+
+    display.display(true); // partial refresh
+  }
+
+  if (!cancelled) {
+    menuBackSwapped = swapped;
+    watchfaceUpShortAction = upShort;
+    watchfaceUpLongAction = upLong;
+    watchfaceDownShortAction = downShort;
+    watchfaceDownLongAction = downLong;
+    saveButtonSettings();
+  }
+
+  showSettingsMenu(settingsMenuIndex, false);
 }
 
 void PicoWatch::showWeatherForecast() {

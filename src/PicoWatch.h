@@ -114,6 +114,10 @@ public:
   // progress on the e-ink display. Shared by the Settings menu's "Update via
   // GitHub" item and the web UI's "GitHub Update" button.
   void updateFromGithub();
+  // Menu/Back swap toggle, plus short/long-press action pickers for Up/Down
+  // while on the watchface (see config.h WATCHFACE_ACTION_* / LONG_PRESS_MS).
+  // Persisted in flash (NVS).
+  void showButtonSettings();
   weatherData getWeatherData();
   void updateFWBegin();
 
