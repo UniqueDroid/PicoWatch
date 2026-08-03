@@ -52,6 +52,26 @@ void saveManualGmtOffset(long offsetSec) {
   prefs.end();
 }
 
+// Web menu login password (see PicoWatch::setupWifi()'s connected-webserver
+// block) - falls back to WEB_MENU_PASSWORD_DEFAULT until the user changes it
+// via the "Change Password" form on that page.
+constexpr const char *kPrefsWebPassKey = "webPass";
+
+String loadWebMenuPassword() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  String pass = prefs.getString(kPrefsWebPassKey, WEB_MENU_PASSWORD_DEFAULT);
+  prefs.end();
+  return pass;
+}
+
+void saveWebMenuPassword(const String &pass) {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putString(kPrefsWebPassKey, pass);
+  prefs.end();
+}
+
 // Step-count history for the last 7 complete days, persisted in flash (NVS)
 // so it survives a reset. history[0] is the most recently completed day,
 // history[6] the oldest. Captured once per real day at 00:00 regardless of
@@ -2044,6 +2064,7 @@ void PicoWatch::setupWifi() {
     // WiFiManager fork instead of the registry one.
     unsigned long authUntil = 0;
     IPAddress authIp;
+    String webMenuPassword = loadWebMenuPassword();
     auto isAuthed = [&]() {
       return authUntil != 0 && millis() <= authUntil && server.client().remoteIP() == authIp;
     };
@@ -2070,7 +2091,7 @@ void PicoWatch::setupWifi() {
       server.send(200, "text/html", themedPage("Login", loginForm(nullptr)));
     });
     server.on("/login", HTTP_POST, [&]() {
-      if (server.arg("p") == WEB_MENU_PASSWORD_DEFAULT) {
+      if (server.arg("p") == webMenuPassword) {
         authUntil = millis() + WEB_MENU_SESSION_MS;
         authIp = server.client().remoteIP();
         server.sendHeader("Location", "/", true);
@@ -2078,6 +2099,34 @@ void PicoWatch::setupWifi() {
       } else {
         server.send(200, "text/html", themedPage("Login", loginForm("Wrong password.")));
       }
+    });
+    server.on("/change-password", HTTP_GET, [&]() {
+      if (!requireAuth()) return;
+      server.send(200, "text/html",
+                   themedPage("Change Password",
+                              "<form method='POST' action='/change-password'>"
+                              "<input type='password' name='p' placeholder='New password (min 8 chars)'>"
+                              "<button type='submit'>Save</button></form>"
+                              "<hr><a href='/'>Back</a>"));
+    });
+    server.on("/change-password", HTTP_POST, [&]() {
+      if (!requireAuth()) return;
+      const String newPass = server.arg("p");
+      if (newPass.length() < 8) {
+        server.send(200, "text/html",
+                     themedPage("Change Password",
+                                "<div class='msg D'>Password must be at least 8 characters.</div>"
+                                "<form method='POST' action='/change-password'>"
+                                "<input type='password' name='p' placeholder='New password (min 8 chars)'>"
+                                "<button type='submit'>Save</button></form>"
+                                "<hr><a href='/'>Back</a>"));
+        return;
+      }
+      webMenuPassword = newPass;
+      saveWebMenuPassword(newPass);
+      server.send(200, "text/html",
+                   themedPage("Change Password",
+                              "<div class='msg S'>Password changed.</div><hr><a href='/'>Back</a>"));
     });
     server.on("/logout", HTTP_GET, [&]() {
       authUntil = 0;
@@ -2095,7 +2144,7 @@ void PicoWatch::setupWifi() {
                     "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
                     "<input type='file' name='update' accept='.bin'>"
                     "<button type='submit'>Upload &amp; Flash (File Update)</button></form>"
-                    "<hr><a href='/logout'>Logout</a>";
+                    "<hr><a href='/change-password'>Change Password</a> &middot; <a href='/logout'>Logout</a>";
       server.send(200, "text/html", themedPage("PicoWatch", body));
     });
     server.on("/github-update", HTTP_POST, [&]() {
