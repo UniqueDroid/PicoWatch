@@ -684,6 +684,28 @@ void PicoWatch::showFastMenu(byte menuIndex) {
   guiState = MAIN_MENU_STATE;
 }
 
+namespace {
+const char *const kSettingsMenuItems[] = {"About PicoWatch", "Vibrate Motor", "Show Accelerometer",
+                                           "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
+                                           "Sync NTP",     "Set Timezone", "Set City",
+                                           "Update via GitHub", "Button Settings"};
+
+// Fitting all SETTINGS_MENU_LENGTH items on screen at once made the rows too
+// cramped to read. Instead this shows a SETTINGS_MENU_VISIBLE_ROWS-tall
+// scrolling window at comfortable MENU_HEIGHT spacing, keeping the current
+// selection centered where possible and clamped at the top/bottom of the
+// full list. Stateless - recomputed fresh from settingsMenuIndex every
+// render, no separate scroll-position variable to keep in sync.
+int settingsMenuScrollOffset(int index) {
+  if (SETTINGS_MENU_LENGTH <= SETTINGS_MENU_VISIBLE_ROWS) return 0;
+  const int maxOffset = SETTINGS_MENU_LENGTH - SETTINGS_MENU_VISIBLE_ROWS;
+  int offset = index - SETTINGS_MENU_VISIBLE_ROWS / 2;
+  if (offset < 0) offset = 0;
+  if (offset > maxOffset) offset = maxOffset;
+  return offset;
+}
+}  // namespace
+
 void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
@@ -693,21 +715,20 @@ void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
   uint16_t w, h;
   int16_t yPos;
 
-  const char *settingsMenuItems[] = {"About PicoWatch", "Vibrate Motor", "Show Accelerometer",
-                                      "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-                                      "Sync NTP",     "Set Timezone", "Set City",
-                                      "Update via GitHub", "Button Settings"};
-  for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
-    yPos = SETTINGS_MENU_ITEM_HEIGHT + (SETTINGS_MENU_ITEM_HEIGHT * i);
+  const int scrollOffset = settingsMenuScrollOffset(settingsMenuIndex);
+  const int visibleCount = min((int)SETTINGS_MENU_VISIBLE_ROWS, (int)SETTINGS_MENU_LENGTH - scrollOffset);
+  for (int row = 0; row < visibleCount; row++) {
+    const int i = scrollOffset + row;
+    yPos = MENU_HEIGHT + (MENU_HEIGHT * row);
     display.setCursor(0, yPos);
     if (i == settingsMenuIndex) {
-      display.getTextBounds(settingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 8, 200, h + 6, GxEPD_WHITE);
+      display.getTextBounds(kSettingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
+      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
-      display.println(settingsMenuItems[i]);
+      display.println(kSettingsMenuItems[i]);
     } else {
       display.setTextColor(GxEPD_WHITE);
-      display.println(settingsMenuItems[i]);
+      display.println(kSettingsMenuItems[i]);
     }
   }
 
@@ -726,21 +747,20 @@ void PicoWatch::showFastSettingsMenu(byte settingsMenuIndex) {
   uint16_t w, h;
   int16_t yPos;
 
-  const char *settingsMenuItems[] = {"About PicoWatch", "Vibrate Motor", "Show Accelerometer",
-                                      "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-                                      "Sync NTP",     "Set Timezone", "Set City",
-                                      "Update via GitHub", "Button Settings"};
-  for (int i = 0; i < SETTINGS_MENU_LENGTH; i++) {
-    yPos = SETTINGS_MENU_ITEM_HEIGHT + (SETTINGS_MENU_ITEM_HEIGHT * i);
+  const int scrollOffset = settingsMenuScrollOffset(settingsMenuIndex);
+  const int visibleCount = min((int)SETTINGS_MENU_VISIBLE_ROWS, (int)SETTINGS_MENU_LENGTH - scrollOffset);
+  for (int row = 0; row < visibleCount; row++) {
+    const int i = scrollOffset + row;
+    yPos = MENU_HEIGHT + (MENU_HEIGHT * row);
     display.setCursor(0, yPos);
     if (i == settingsMenuIndex) {
-      display.getTextBounds(settingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 8, 200, h + 6, GxEPD_WHITE);
+      display.getTextBounds(kSettingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
+      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
-      display.println(settingsMenuItems[i]);
+      display.println(kSettingsMenuItems[i]);
     } else {
       display.setTextColor(GxEPD_WHITE);
-      display.println(settingsMenuItems[i]);
+      display.println(kSettingsMenuItems[i]);
     }
   }
 

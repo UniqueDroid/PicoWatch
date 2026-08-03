@@ -116,7 +116,7 @@
 #define MENU_HEIGHT     25
 #define MENU_LENGTH     6           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Weather, Settings
 #define SETTINGS_MENU_LENGTH 10     // About, Vibrate, Accelerometer, Set Time, WiFi, Sync NTP, Set Timezone, Set City, Update via GitHub, Button Settings
-#define SETTINGS_MENU_ITEM_HEIGHT 19  // tighter than MENU_HEIGHT so all 10 rows still fit within DISPLAY_HEIGHT (200px)
+#define SETTINGS_MENU_VISIBLE_ROWS 6  // scrolling window size - showing all 10 at once (via a tighter row height) was too cramped/hard to read
 // button remapping (PicoWatch::showButtonSettings()) - Menu/Back swap plus
 // short/long-press action pickers for Up/Down while on the watchface
 // (previously unused there). Long-press threshold in ms.
