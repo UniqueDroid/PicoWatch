@@ -1,6 +1,7 @@
 #include "PicoWatch.h"
 #include <Preferences.h>
 #include <mbedtls/sha256.h> // SHA256 verification for GitHub OTA - see PicoWatch::updateFromGithub()
+#include <Fonts/FreeMonoBold12pt7b.h> // "Big" menu font size - see PicoWatch::showFontSizeSettings()
 
 // Cached copy of the persisted alarm (see setAlarm()/onReset()) - survives
 // deep sleep like guiState/menuIndex; loaded from flash once on reset rather
@@ -27,6 +28,10 @@ RTC_DATA_ATTR uint8_t watchfaceUpShortAction;
 RTC_DATA_ATTR uint8_t watchfaceUpLongAction;
 RTC_DATA_ATTR uint8_t watchfaceDownShortAction;
 RTC_DATA_ATTR uint8_t watchfaceDownLongAction;
+
+// Menu/Settings-list font size (see PicoWatch::showFontSizeSettings()) -
+// same caching rationale as above.
+RTC_DATA_ATTR uint8_t uiFontSize;
 
 namespace {
 // Manual timezone override, persisted in flash (NVS) so it survives power
@@ -167,6 +172,61 @@ const char *watchfaceActionName(uint8_t action) {
   case WATCHFACE_ACTION_STOPWATCH: return "Stopwatch";
   case WATCHFACE_ACTION_ALARM: return "Alarm";
   default: return "None";
+  }
+}
+
+constexpr const char *kPrefsFontSizeKey = "uiFont";
+
+void loadFontSize() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  uiFontSize = prefs.getUChar(kPrefsFontSizeKey, UI_FONT_SIZE_DEFAULT);
+  prefs.end();
+}
+
+void saveFontSize() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putUChar(kPrefsFontSizeKey, uiFontSize);
+  prefs.end();
+}
+
+const char *fontSizeName(uint8_t size) {
+  switch (size) {
+  case UI_FONT_SIZE_SMALL: return "Small";
+  case UI_FONT_SIZE_BIG: return "Big";
+  default: return "Default";
+  }
+}
+
+// Scoped to just the top-level menu and Settings list (see config.h) - the
+// built-in classic GFX font (nullptr) is genuinely smaller than any bundled
+// FreeMono size, so it stands in for "Small" rather than trying to find/ship
+// a smaller mono font.
+const GFXfont *uiMenuFont() {
+  switch (uiFontSize) {
+  case UI_FONT_SIZE_SMALL: return nullptr;
+  case UI_FONT_SIZE_BIG: return &FreeMonoBold12pt7b;
+  default: return &FreeMonoBold9pt7b;
+  }
+}
+
+// Row spacing and highlight-box padding tuned per size - chosen so 6 rows
+// (the largest of MENU_LENGTH/SETTINGS_MENU_VISIBLE_ROWS) always fit within
+// the 200px display regardless of size (16*6=96, 25*6=150, 32*6=192).
+int uiMenuRowHeight() {
+  switch (uiFontSize) {
+  case UI_FONT_SIZE_SMALL: return 16;
+  case UI_FONT_SIZE_BIG: return 32;
+  default: return MENU_HEIGHT;
+  }
+}
+
+void uiMenuHighlightPadding(int16_t &yOffset, uint16_t &heightPad) {
+  switch (uiFontSize) {
+  case UI_FONT_SIZE_SMALL: yOffset = -3; heightPad = 6; break;
+  case UI_FONT_SIZE_BIG: yOffset = -12; heightPad = 18; break;
+  default: yOffset = -10; heightPad = 15; break;
   }
 }
 
@@ -311,6 +371,7 @@ void PicoWatch::init(String datetime) {
     loadAlarm();
     loadWeatherCityID(settings.cityID);
     loadButtonSettings();
+    loadFontSize();
     RTC.read(currentTime);
     RTC.read(bootTime);
     showWatchFace(false); // full update on reset
@@ -422,6 +483,9 @@ void dispatchSettingsMenu(PicoWatch *w, int index) {
     break;
   case 9:
     w->showButtonSettings();
+    break;
+  case 10:
+    w->showFontSizeSettings();
     break;
   default:
     break;
@@ -628,19 +692,23 @@ void PicoWatch::handleButtonPress() {
 void PicoWatch::showMenu(byte menuIndex, bool partialRefresh) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
+  display.setFont(uiMenuFont());
 
   int16_t x1, y1;
   uint16_t w, h;
   int16_t yPos;
+  const int rowHeight = uiMenuRowHeight();
+  int16_t highlightYOffset;
+  uint16_t highlightHeightPad;
+  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
   const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Alarm", "Weather (5 Days)", "Settings"};
   for (int i = 0; i < MENU_LENGTH; i++) {
-    yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
+    yPos = rowHeight + (rowHeight * i);
     display.setCursor(0, yPos);
     if (i == menuIndex) {
       display.getTextBounds(menuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+      display.fillRect(x1 - 1, y1 + highlightYOffset, 200, h + highlightHeightPad, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
       display.println(menuItems[i]);
     } else {
@@ -658,19 +726,23 @@ void PicoWatch::showMenu(byte menuIndex, bool partialRefresh) {
 void PicoWatch::showFastMenu(byte menuIndex) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
+  display.setFont(uiMenuFont());
 
   int16_t x1, y1;
   uint16_t w, h;
   int16_t yPos;
+  const int rowHeight = uiMenuRowHeight();
+  int16_t highlightYOffset;
+  uint16_t highlightHeightPad;
+  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
   const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Alarm", "Weather (5 Days)", "Settings"};
   for (int i = 0; i < MENU_LENGTH; i++) {
-    yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
+    yPos = rowHeight + (rowHeight * i);
     display.setCursor(0, yPos);
     if (i == menuIndex) {
       display.getTextBounds(menuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+      display.fillRect(x1 - 1, y1 + highlightYOffset, 200, h + highlightHeightPad, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
       display.println(menuItems[i]);
     } else {
@@ -688,7 +760,7 @@ namespace {
 const char *const kSettingsMenuItems[] = {"About PicoWatch", "Vibrate Motor", "Show Accelerometer",
                                            "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
                                            "Sync NTP",     "Set Timezone", "Set City",
-                                           "Update via GitHub", "Button Settings"};
+                                           "Update via GitHub", "Button Settings", "Font Size"};
 
 // Fitting all SETTINGS_MENU_LENGTH items on screen at once made the rows too
 // cramped to read. Instead this shows a SETTINGS_MENU_VISIBLE_ROWS-tall
@@ -709,21 +781,25 @@ int settingsMenuScrollOffset(int index) {
 void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
+  display.setFont(uiMenuFont());
 
   int16_t x1, y1;
   uint16_t w, h;
   int16_t yPos;
+  const int rowHeight = uiMenuRowHeight();
+  int16_t highlightYOffset;
+  uint16_t highlightHeightPad;
+  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
   const int scrollOffset = settingsMenuScrollOffset(settingsMenuIndex);
   const int visibleCount = min((int)SETTINGS_MENU_VISIBLE_ROWS, (int)SETTINGS_MENU_LENGTH - scrollOffset);
   for (int row = 0; row < visibleCount; row++) {
     const int i = scrollOffset + row;
-    yPos = MENU_HEIGHT + (MENU_HEIGHT * row);
+    yPos = rowHeight + (rowHeight * row);
     display.setCursor(0, yPos);
     if (i == settingsMenuIndex) {
       display.getTextBounds(kSettingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+      display.fillRect(x1 - 1, y1 + highlightYOffset, 200, h + highlightHeightPad, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
       display.println(kSettingsMenuItems[i]);
     } else {
@@ -741,21 +817,25 @@ void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
 void PicoWatch::showFastSettingsMenu(byte settingsMenuIndex) {
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
+  display.setFont(uiMenuFont());
 
   int16_t x1, y1;
   uint16_t w, h;
   int16_t yPos;
+  const int rowHeight = uiMenuRowHeight();
+  int16_t highlightYOffset;
+  uint16_t highlightHeightPad;
+  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
   const int scrollOffset = settingsMenuScrollOffset(settingsMenuIndex);
   const int visibleCount = min((int)SETTINGS_MENU_VISIBLE_ROWS, (int)SETTINGS_MENU_LENGTH - scrollOffset);
   for (int row = 0; row < visibleCount; row++) {
     const int i = scrollOffset + row;
-    yPos = MENU_HEIGHT + (MENU_HEIGHT * row);
+    yPos = rowHeight + (rowHeight * row);
     display.setCursor(0, yPos);
     if (i == settingsMenuIndex) {
       display.getTextBounds(kSettingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
+      display.fillRect(x1 - 1, y1 + highlightYOffset, 200, h + highlightHeightPad, GxEPD_WHITE);
       display.setTextColor(GxEPD_BLACK);
       display.println(kSettingsMenuItems[i]);
     } else {
@@ -1134,6 +1214,79 @@ void PicoWatch::showButtonSettings() {
     watchfaceDownShortAction = downShort;
     watchfaceDownLongAction = downLong;
     saveButtonSettings();
+  }
+
+  showSettingsMenu(settingsMenuIndex, false);
+}
+
+void PicoWatch::showFontSizeSettings() {
+  guiState = APP_STATE;
+
+  uint8_t size = uiFontSize;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  bool cancelled = false;
+  bool confirmed = false;
+  while (!confirmed) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      confirmed = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      cancelled = true;
+      break;
+    }
+
+    blink = 1 - blink;
+
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      size = (size + 1) % UI_FONT_SIZE_COUNT;
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      size = (size + UI_FONT_SIZE_COUNT - 1) % UI_FONT_SIZE_COUNT;
+    }
+
+    // Preview the actual font/spacing this size will use, not the screen's
+    // own fixed font - otherwise you can't tell what you're picking.
+    display.fillScreen(GxEPD_BLACK);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setTextColor(GxEPD_WHITE);
+    display.setCursor(10, 20);
+    display.println("Font Size");
+    display.setCursor(10, 40);
+    display.println("(menu + settings)");
+
+    display.setFont(size == UI_FONT_SIZE_SMALL     ? nullptr
+                     : size == UI_FONT_SIZE_BIG    ? &FreeMonoBold12pt7b
+                                                    : &FreeMonoBold9pt7b);
+    display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    int16_t x1, y1;
+    uint16_t w, h;
+    const char *name = fontSizeName(size);
+    display.getTextBounds(name, 0, 90, &x1, &y1, &w, &h);
+    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, GxEPD_WHITE);
+    display.setCursor(10, 90);
+    display.println(name);
+
+    display.display(true); // partial refresh
+  }
+
+  if (confirmed && !cancelled) {
+    uiFontSize = size;
+    saveFontSize();
   }
 
   showSettingsMenu(settingsMenuIndex, false);

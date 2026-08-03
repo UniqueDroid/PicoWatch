@@ -118,6 +118,9 @@ public:
   // while on the watchface (see config.h WATCHFACE_ACTION_* / LONG_PRESS_MS).
   // Persisted in flash (NVS).
   void showButtonSettings();
+  // Small/Default/Big font size for the top-level menu and Settings list
+  // (see config.h UI_FONT_SIZE_*). Persisted in flash (NVS).
+  void showFontSizeSettings();
   weatherData getWeatherData();
   void updateFWBegin();
 
