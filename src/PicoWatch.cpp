@@ -212,14 +212,25 @@ const GFXfont *uiMenuFont() {
 }
 
 // Row spacing and highlight-box padding tuned per size - chosen so 6 rows
-// (the largest of MENU_LENGTH/SETTINGS_MENU_VISIBLE_ROWS) always fit within
-// the 200px display regardless of size (16*6=96, 25*6=150, 32*6=192).
+// (MENU_LENGTH, the fixed top-level menu) always fit within the 200px
+// display regardless of size (16*6=96, 25*6=150, 32*6=192).
 int uiMenuRowHeight() {
   switch (uiFontSize) {
   case UI_FONT_SIZE_SMALL: return 16;
   case UI_FONT_SIZE_BIG: return 32;
   default: return MENU_HEIGHT;
   }
+}
+
+// How many Settings-list rows fit edge-to-edge in DISPLAY_HEIGHT at the
+// current row height, capped at the list's actual length (no point
+// reserving scroll space that will never be used). Previously a fixed
+// SETTINGS_MENU_VISIBLE_ROWS=6 left a visibly empty black bar at the
+// bottom with the Default row height (6*25=150 of 200px) - computing this
+// fills the screen instead.
+int uiSettingsVisibleRows() {
+  const int rows = DISPLAY_HEIGHT / uiMenuRowHeight();
+  return min(rows, (int)SETTINGS_MENU_LENGTH);
 }
 
 void uiMenuHighlightPadding(int16_t &yOffset, uint16_t &heightPad) {
@@ -763,15 +774,16 @@ const char *const kSettingsMenuItems[] = {"About PicoWatch", "Vibrate Motor", "S
                                            "Update via GitHub", "Button Settings", "Font Size"};
 
 // Fitting all SETTINGS_MENU_LENGTH items on screen at once made the rows too
-// cramped to read. Instead this shows a SETTINGS_MENU_VISIBLE_ROWS-tall
-// scrolling window at comfortable MENU_HEIGHT spacing, keeping the current
-// selection centered where possible and clamped at the top/bottom of the
-// full list. Stateless - recomputed fresh from settingsMenuIndex every
-// render, no separate scroll-position variable to keep in sync.
-int settingsMenuScrollOffset(int index) {
-  if (SETTINGS_MENU_LENGTH <= SETTINGS_MENU_VISIBLE_ROWS) return 0;
-  const int maxOffset = SETTINGS_MENU_LENGTH - SETTINGS_MENU_VISIBLE_ROWS;
-  int offset = index - SETTINGS_MENU_VISIBLE_ROWS / 2;
+// cramped to read. Instead this shows a scrolling window (sized by
+// uiSettingsVisibleRows(), which fills the display edge-to-edge at the
+// current font size) at comfortable spacing, keeping the current selection
+// centered where possible and clamped at the top/bottom of the full list.
+// Stateless - recomputed fresh from settingsMenuIndex every render, no
+// separate scroll-position variable to keep in sync.
+int settingsMenuScrollOffset(int index, int visibleRows) {
+  if (SETTINGS_MENU_LENGTH <= visibleRows) return 0;
+  const int maxOffset = SETTINGS_MENU_LENGTH - visibleRows;
+  int offset = index - visibleRows / 2;
   if (offset < 0) offset = 0;
   if (offset > maxOffset) offset = maxOffset;
   return offset;
@@ -791,8 +803,9 @@ void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
   uint16_t highlightHeightPad;
   uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
-  const int scrollOffset = settingsMenuScrollOffset(settingsMenuIndex);
-  const int visibleCount = min((int)SETTINGS_MENU_VISIBLE_ROWS, (int)SETTINGS_MENU_LENGTH - scrollOffset);
+  const int visibleRows = uiSettingsVisibleRows();
+  const int scrollOffset = settingsMenuScrollOffset(settingsMenuIndex, visibleRows);
+  const int visibleCount = min(visibleRows, (int)SETTINGS_MENU_LENGTH - scrollOffset);
   for (int row = 0; row < visibleCount; row++) {
     const int i = scrollOffset + row;
     yPos = rowHeight + (rowHeight * row);
@@ -827,8 +840,9 @@ void PicoWatch::showFastSettingsMenu(byte settingsMenuIndex) {
   uint16_t highlightHeightPad;
   uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
-  const int scrollOffset = settingsMenuScrollOffset(settingsMenuIndex);
-  const int visibleCount = min((int)SETTINGS_MENU_VISIBLE_ROWS, (int)SETTINGS_MENU_LENGTH - scrollOffset);
+  const int visibleRows = uiSettingsVisibleRows();
+  const int scrollOffset = settingsMenuScrollOffset(settingsMenuIndex, visibleRows);
+  const int visibleCount = min(visibleRows, (int)SETTINGS_MENU_LENGTH - scrollOffset);
   for (int row = 0; row < visibleCount; row++) {
     const int i = scrollOffset + row;
     yPos = rowHeight + (rowHeight * row);

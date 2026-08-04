@@ -116,7 +116,11 @@
 #define MENU_HEIGHT     25
 #define MENU_LENGTH     6           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Weather, Settings
 #define SETTINGS_MENU_LENGTH 11     // About, Vibrate, Accelerometer, Set Time, WiFi, Sync NTP, Set Timezone, Set City, Update via GitHub, Button Settings, Font Size
-#define SETTINGS_MENU_VISIBLE_ROWS 6  // scrolling window size - showing all rows at once (via a tighter row height) was too cramped/hard to read
+// Scrolling window size is computed at runtime as DISPLAY_HEIGHT / row
+// height (see uiSettingsVisibleRows() in PicoWatch.cpp) instead of a fixed
+// constant, so it fills the screen edge-to-edge (no empty black bar at the
+// bottom) at every font size - a fixed row count sized for Default would
+// either leave dead space (Small) or overflow the display (Big).
 // menu list font size (Settings -> "Font Size"), scoped to just the top-
 // level menu and Settings list (see project memory - a true system-wide
 // size would need every single screen's hand-tuned pixel positions
