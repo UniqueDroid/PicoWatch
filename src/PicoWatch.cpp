@@ -2399,6 +2399,24 @@ void PicoWatch::setupWifi() {
   wifiManager.setTimeout(WIFI_AP_TIMEOUT);
   wifiManager.setAPCallback(_configModeCallback);
   wifiManager.setCustomHeadElement(kWifiPortalTheme);
+  // Non-blocking so the SAME WiFiManager-owned server can keep running
+  // after connect (via startWebPortal() below) instead of tearing down and
+  // standing up a second, unrelated WebServer for the post-connect pages -
+  // this is the actual pfsense-status-esp32 architecture (one unified
+  // portal that grows from a minimal join screen into the full app once
+  // connected), just using the stock WiFiManager 2.0.17 APIs directly
+  // (setCustomMenuHTML, the public `server` member, startWebPortal/
+  // process/stopWebPortal) instead of vendoring their patched fork -
+  // confirmed those are all stock APIs, verified against the actual
+  // installed library rather than assumed. The ONE thing pfsense's fork
+  // adds that stock WiFiManager doesn't expose is handleRequest() as
+  // public, which is how THEY gate their custom pages behind the same
+  // session as WiFiManager's own pages - we can't reuse that, so our own
+  // requireAuth() below covers our pages, and WiFiManager's root menu
+  // itself (just button links once connected) is unauthenticated to view,
+  // though every actual action still redirects through login first.
+  wifiManager.setConfigPortalBlocking(false);
+
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
   display.setFont(&FreeMonoBold9pt7b);
@@ -2409,182 +2427,209 @@ void PicoWatch::setupWifi() {
   // bottom edge) - looks like a blank/black screen since nothing visible
   // gets drawn. Every other screen in this file sets this explicitly.
   display.setCursor(0, 30);
+  display.println("Connecting...");
+  display.display(false);
+
   bool connected = wifiManager.autoConnect(WIFI_AP_SSID);
-  if (!connected) { // WiFi setup failed
-    display.println("Setup failed &");
-    display.println("timed out!");
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  if (!connected) {
+    // autoConnect() returns quickly here since the portal is non-blocking -
+    // pump it ourselves (wifiManager.process()) while polling for either a
+    // successful connect, our own AP timeout, or Back to cancel.
+    display.fillScreen(GxEPD_BLACK);
+    display.setCursor(0, 20);
+    display.println("Connect phone to:");
+    display.println(WIFI_AP_SSID);
+    display.println("Then open the IP");
+    display.println("shown on your phone.");
+    display.println(" ");
+    display.println("Back to cancel");
+    display.display(false);
+
+    unsigned long portalStart = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+      wifiManager.process();
+      if (millis() - portalStart > (unsigned long)WIFI_AP_TIMEOUT * 1000UL) break;
+      if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) break;
+      delay(10);
+    }
+    connected = (WiFi.status() == WL_CONNECTED);
+  }
+
+  display.fillScreen(GxEPD_BLACK);
+  display.setCursor(0, 30);
+  if (!connected) {
+    display.println("Setup failed");
+    display.println("or timed out.");
   } else {
     display.println("Connected to:");
     display.println(WiFi.SSID());
-		display.println("Local IP:");
-		display.println(WiFi.localIP());
+    display.println("Local IP:");
+    display.println(WiFi.localIP());
     display.println(" ");
     display.println("Back to disconnect");
-    weatherIntervalCounter = -1; // Reset to force weather to be read again
+    weatherIntervalCounter = -1; // force a fresh weather fetch, may be on a new network
     lastIPAddress = WiFi.localIP();
     WiFi.SSID().toCharArray(lastSSID, 30);
   }
-  display.display(false); // full refresh
+  display.display(false);
 
   if (connected) {
-    // Keep the connection (and IP) actually reachable for a while instead
-    // of tearing it straight back down, and serve a small status/File
-    // Update page while it's up - otherwise the display still says
-    // "Connected to..." but the radio is already off underneath it, so
-    // pinging/browsing the shown IP only worked for the couple of seconds
-    // before this point. Exits early on Back, or after
-    // WIFI_STAY_CONNECTED_TIMEOUT seconds of nobody touching it.
-    pinMode(BACK_BTN_PIN, INPUT);
-    WebServer server(80);
-
-    // Login gate for the pages below, same idea as pfsense-status-esp32's
-    // menu password: a form login, then a session tied to the client's IP
-    // for WEB_MENU_SESSION_MS - not HTTP Basic Auth, not a cookie. Only
-    // covers this WebServer's own pages (this status/File-Update/GitHub-
-    // Update page); the WiFiManager join screen above is untouched stock
-    // WiFiManager and stays unprotected, since replicating pfsense-status-
-    // esp32's login there would mean vendoring its ~4000-line patched
-    // WiFiManager fork instead of the registry one.
+    // Login gate for our own routes below, same idea as pfsense-status-
+    // esp32's menu password: a form login, then a session tied to the
+    // client's IP for WEB_MENU_SESSION_MS - not HTTP Basic Auth, not a
+    // cookie.
     unsigned long authUntil = 0;
     IPAddress authIp;
     String webMenuPassword = loadWebMenuPassword();
-    auto isAuthed = [&]() {
-      return authUntil != 0 && millis() <= authUntil && server.client().remoteIP() == authIp;
-    };
-    auto requireAuth = [&]() {
-      if (isAuthed()) return true;
-      server.sendHeader("Location", "/login", true);
-      server.send(302, "text/plain", "");
-      return false;
-    };
-    auto loginForm = [](const char *notice) {
-      String body;
-      if (notice) {
-        body += "<div class='msg D'>";
-        body += notice;
-        body += "</div>";
-      }
-      body += "<form method='POST' action='/login'>"
-              "<input type='password' name='p' placeholder='Password'>"
-              "<button type='submit'>Login</button></form>";
-      return body;
-    };
 
-    server.on("/login", HTTP_GET, [&]() {
-      server.send(200, "text/html", themedPage("Login", loginForm(nullptr)));
-    });
-    server.on("/login", HTTP_POST, [&]() {
-      if (server.arg("p") == webMenuPassword) {
-        authUntil = millis() + WEB_MENU_SESSION_MS;
-        authIp = server.client().remoteIP();
-        server.sendHeader("Location", "/", true);
-        server.send(302, "text/plain", "");
-      } else {
-        server.send(200, "text/html", themedPage("Login", loginForm("Wrong password.")));
-      }
-    });
-    server.on("/change-password", HTTP_GET, [&]() {
-      if (!requireAuth()) return;
-      server.send(200, "text/html",
+    wifiManager.startWebPortal(); // (re)starts WiFiManager's own server, now on the STA IP
+
+    if (wifiManager.server) {
+      WebServer &srv = *wifiManager.server;
+      auto isAuthed = [&]() {
+        return authUntil != 0 && millis() <= authUntil && srv.client().remoteIP() == authIp;
+      };
+      auto requireAuth = [&]() {
+        if (isAuthed()) return true;
+        srv.sendHeader("Location", "/login", true);
+        srv.send(302, "text/plain", "");
+        return false;
+      };
+      auto loginForm = [](const char *notice) {
+        String body;
+        if (notice) {
+          body += "<div class='msg D'>";
+          body += notice;
+          body += "</div>";
+        }
+        body += "<form method='POST' action='/login'>"
+                "<input type='password' name='p' placeholder='Password'>"
+                "<button type='submit'>Login</button></form>";
+        return body;
+      };
+
+      srv.on("/login", HTTP_GET, [&]() {
+        srv.send(200, "text/html", themedPage("Login", loginForm(nullptr)));
+      });
+      srv.on("/login", HTTP_POST, [&]() {
+        if (srv.arg("p") == webMenuPassword) {
+          authUntil = millis() + WEB_MENU_SESSION_MS;
+          authIp = srv.client().remoteIP();
+          srv.sendHeader("Location", "/", true);
+          srv.send(302, "text/plain", "");
+        } else {
+          srv.send(200, "text/html", themedPage("Login", loginForm("Wrong password.")));
+        }
+      });
+      srv.on("/change-password", HTTP_GET, [&]() {
+        if (!requireAuth()) return;
+        srv.send(200, "text/html",
+                 themedPage("Change Password",
+                            "<form method='POST' action='/change-password'>"
+                            "<input type='password' name='p' placeholder='New password (min 8 chars)'>"
+                            "<button type='submit'>Save</button></form>"
+                            "<hr><a href='/'>Back</a>"));
+      });
+      srv.on("/change-password", HTTP_POST, [&]() {
+        if (!requireAuth()) return;
+        const String newPass = srv.arg("p");
+        if (newPass.length() < 8) {
+          srv.send(200, "text/html",
                    themedPage("Change Password",
+                              "<div class='msg D'>Password must be at least 8 characters.</div>"
                               "<form method='POST' action='/change-password'>"
                               "<input type='password' name='p' placeholder='New password (min 8 chars)'>"
                               "<button type='submit'>Save</button></form>"
                               "<hr><a href='/'>Back</a>"));
-    });
-    server.on("/change-password", HTTP_POST, [&]() {
-      if (!requireAuth()) return;
-      const String newPass = server.arg("p");
-      if (newPass.length() < 8) {
-        server.send(200, "text/html",
-                     themedPage("Change Password",
-                                "<div class='msg D'>Password must be at least 8 characters.</div>"
-                                "<form method='POST' action='/change-password'>"
-                                "<input type='password' name='p' placeholder='New password (min 8 chars)'>"
-                                "<button type='submit'>Save</button></form>"
-                                "<hr><a href='/'>Back</a>"));
-        return;
-      }
-      webMenuPassword = newPass;
-      saveWebMenuPassword(newPass);
-      server.send(200, "text/html",
-                   themedPage("Change Password",
-                              "<div class='msg S'>Password changed.</div><hr><a href='/'>Back</a>"));
-    });
-    server.on("/logout", HTTP_GET, [&]() {
-      authUntil = 0;
-      server.sendHeader("Location", "/login", true);
-      server.send(302, "text/plain", "");
-    });
+          return;
+        }
+        webMenuPassword = newPass;
+        saveWebMenuPassword(newPass);
+        srv.send(200, "text/html",
+                 themedPage("Change Password",
+                            "<div class='msg S'>Password changed.</div><hr><a href='/'>Back</a>"));
+      });
+      srv.on("/logout", HTTP_GET, [&]() {
+        authUntil = 0;
+        srv.sendHeader("Location", "/login", true);
+        srv.send(302, "text/plain", "");
+      });
+      srv.on("/github-update", HTTP_POST, [&]() {
+        if (!requireAuth()) return;
+        srv.send(200, "text/html",
+                 themedPage("GitHub Update",
+                            "<div class='msg P'>Starting GitHub update check&hellip;<br/>"
+                            "Watch the device screen for progress.</div>"));
+        updateFromGithub(); // blocking; reboots on success, falls through here on failure
+      });
+      srv.on(
+          "/file-update", HTTP_POST,
+          [&]() {
+            if (!requireAuth()) return;
+            srv.sendHeader("Connection", "close");
+            const bool ok = !Update.hasError();
+            srv.send(200, "text/html",
+                     themedPage("File Update",
+                                ok ? "<div class='msg S'><strong>Update OK</strong><br/>Rebooting&hellip;</div>"
+                                   : "<div class='msg D'><strong>Update failed.</strong></div>"));
+            if (ok) {
+              delay(500);
+              ESP.restart();
+            }
+          },
+          [&]() {
+            // Runs (and streams straight into the OTA partition) BEFORE
+            // the main handler above gets a chance to run requireAuth() -
+            // checking auth only there would let an unauthenticated
+            // request's file bytes reach Update.write() regardless of the
+            // final response. Gate it here too.
+            static bool uploadAuthorized = false;
+            HTTPUpload &upload = srv.upload();
+            if (upload.status == UPLOAD_FILE_START) {
+              uploadAuthorized = isAuthed();
+              if (!uploadAuthorized) return;
+              display.fillScreen(GxEPD_BLACK);
+              display.setCursor(0, 30);
+              display.println("Receiving update");
+              display.println("via File Update...");
+              display.display(false);
+              Update.begin(UPDATE_SIZE_UNKNOWN);
+            } else if (upload.status == UPLOAD_FILE_WRITE) {
+              if (uploadAuthorized) Update.write(upload.buf, upload.currentSize);
+            } else if (upload.status == UPLOAD_FILE_END) {
+              if (uploadAuthorized) Update.end(true);
+            }
+          });
 
-    server.on("/", HTTP_GET, [&]() {
-      if (!requireAuth()) return;
-      String body = "<div class='msg S'><strong>Connected</strong> to " + String(lastSSID) + "</div>"
-                    "<h3>Firmware Update</h3><hr>"
-                    "<form method='POST' action='/github-update'>"
-                    "<button type='submit'>Check GitHub &amp; Flash</button></form>"
-                    "<hr>"
-                    "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
-                    "<input type='file' name='update' accept='.bin'>"
-                    "<button type='submit'>Upload &amp; Flash (File Update)</button></form>"
-                    "<hr><a href='/change-password'>Change Password</a> &middot; <a href='/logout'>Logout</a>";
-      server.send(200, "text/html", themedPage("PicoWatch", body));
-    });
-    server.on("/github-update", HTTP_POST, [&]() {
-      if (!requireAuth()) return;
-      server.send(200, "text/html",
-                   themedPage("GitHub Update",
-                              "<div class='msg P'>Starting GitHub update check&hellip;<br/>"
-                              "Watch the device screen for progress.</div>"));
-      updateFromGithub(); // blocking; reboots on success, falls through here on failure
-    });
-    server.on(
-        "/file-update", HTTP_POST,
-        [&]() {
-          if (!requireAuth()) return;
-          server.sendHeader("Connection", "close");
-          const bool ok = !Update.hasError();
-          server.send(200, "text/html",
-                      themedPage("File Update",
-                                 ok ? "<div class='msg S'><strong>Update OK</strong><br/>Rebooting&hellip;</div>"
-                                    : "<div class='msg D'><strong>Update failed.</strong></div>"));
-          if (ok) {
-            delay(500);
-            ESP.restart();
-          }
-        },
-        [&]() {
-          // The upload handler runs (and streams straight into the OTA
-          // partition) BEFORE the main handler above gets a chance to run
-          // requireAuth() - checking auth only there would let an
-          // unauthenticated request's file bytes reach Update.write()
-          // regardless of the final response. Gate it here too.
-          static bool uploadAuthorized = false;
-          HTTPUpload &upload = server.upload();
-          if (upload.status == UPLOAD_FILE_START) {
-            uploadAuthorized = isAuthed();
-            if (!uploadAuthorized) return;
-            display.fillScreen(GxEPD_BLACK);
-            display.setCursor(0, 30);
-            display.println("Receiving update");
-            display.println("via File Update...");
-            display.display(false);
-            Update.begin(UPDATE_SIZE_UNKNOWN);
-          } else if (upload.status == UPLOAD_FILE_WRITE) {
-            if (uploadAuthorized) Update.write(upload.buf, upload.currentSize);
-          } else if (upload.status == UPLOAD_FILE_END) {
-            if (uploadAuthorized) Update.end(true);
-          }
-        });
-    server.begin();
+      // Once connected, WiFiManager's own root page ("/") becomes our
+      // app's home screen: a minimal stock menu (just "wifi", to still
+      // allow reconfiguring from the browser) plus our own buttons
+      // injected via setCustomMenuHTML() - same mechanism
+      // pfsense-status-esp32 uses (buildCustomMenuHtml() there), just
+      // called directly instead of through their patched fork.
+      static std::vector<const char *> kConnectedMenuIds = {"wifi"};
+      wifiManager.setMenu(kConnectedMenuIds);
+      String fullMenu = "<div class='msg S'><strong>Connected</strong> to " + String(lastSSID) + "</div>"
+                        "<h3>Firmware Update</h3><hr>"
+                        "<form method='POST' action='/github-update'>"
+                        "<button type='submit'>Check GitHub &amp; Flash</button></form>"
+                        "<hr>"
+                        "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
+                        "<input type='file' name='update' accept='.bin'>"
+                        "<button type='submit'>Upload &amp; Flash (File Update)</button></form>"
+                        "<hr><a href='/change-password'>Change Password</a> &middot; <a href='/logout'>Logout</a>";
+      wifiManager.setCustomMenuHTML(fullMenu.c_str());
+    }
 
     unsigned long connectedAt = millis();
     while (millis() - connectedAt < (unsigned long)WIFI_STAY_CONNECTED_TIMEOUT * 1000UL) {
-      server.handleClient();
+      wifiManager.process();
       if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) break;
       delay(10);
     }
-    server.stop();
+    wifiManager.stopWebPortal();
   }
 
   // turn off radios
