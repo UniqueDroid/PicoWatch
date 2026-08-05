@@ -2464,8 +2464,9 @@ void PicoWatch::setupWifi() {
   } else {
     display.println("Connected to:");
     display.println(WiFi.SSID());
-		display.println("Local IP:");
-		display.println(WiFi.localIP());
+		display.println("Open in browser:");
+		display.print(WiFi.localIP());
+		display.println(":8080");
     display.println(" ");
     display.println("Back to disconnect");
     weatherIntervalCounter = -1; // Reset to force weather to be read again
@@ -2482,8 +2483,19 @@ void PicoWatch::setupWifi() {
     // pinging/browsing the shown IP only worked for the couple of seconds
     // before this point. Exits early on Back, or after
     // WIFI_STAY_CONNECTED_TIMEOUT seconds of nobody touching it.
+    //
+    // Port 8080, not 80: if the join flow actually went through
+    // WiFiManager's own config portal (rather than reconnecting instantly
+    // with saved credentials), WiFiManager still owns a WebServer bound to
+    // port 80 internally (WiFiManager.h's `server` member) - its own
+    // source acknowledges this doesn't always release the port cleanly
+    // (WiFiManager.cpp shutdownConfigPortal(): "many open issues about
+    // port not clearing for use with other servers"). Binding a second
+    // WebServer(80) can silently lose that race, leaving WiFiManager's own
+    // stale portal page answering instead of ours - a different port
+    // sidesteps the conflict entirely instead of trying to time around it.
     pinMode(BACK_BTN_PIN, INPUT);
-    WebServer server(80);
+    WebServer server(8080);
 
     // Login gate for the pages below, same idea as pfsense-status-esp32's
     // menu password: a form login, then a session tied to the client's IP
