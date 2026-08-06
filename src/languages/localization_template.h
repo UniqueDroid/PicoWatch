@@ -50,7 +50,7 @@ const char *const kLocalizedStrings_xx[PW_STR_COUNT] = {
   "Sync NTP",  // PW_SETTINGS_SYNC_NTP
   "Set Timezone",  // PW_SETTINGS_SET_TIMEZONE
   "Set City",  // PW_SETTINGS_SET_CITY
-  "Update via GitHub",  // PW_SETTINGS_UPDATE_GITHUB
+  "Online Update",  // PW_SETTINGS_UPDATE_GITHUB
   "Button Settings",  // PW_SETTINGS_BUTTON_SETTINGS
   "Font Size",  // PW_SETTINGS_FONT_SIZE
   "Language",  // PW_SETTINGS_LANGUAGE

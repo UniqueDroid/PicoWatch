@@ -32,7 +32,7 @@ const char *const kLocalizedStrings_de[PW_STR_COUNT] = {
   "NTP synchron.",  // PW_SETTINGS_SYNC_NTP
   "Zeitzone",  // PW_SETTINGS_SET_TIMEZONE
   "Stadt einstellen",  // PW_SETTINGS_SET_CITY
-  "Update via GitHub",  // PW_SETTINGS_UPDATE_GITHUB
+  "Online-Update",  // PW_SETTINGS_UPDATE_GITHUB
   "Tasten-Einst.",  // PW_SETTINGS_BUTTON_SETTINGS
   "Schriftgroesse",  // PW_SETTINGS_FONT_SIZE
   "Sprache",  // PW_SETTINGS_LANGUAGE

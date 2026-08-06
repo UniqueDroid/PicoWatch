@@ -100,6 +100,14 @@
 #define NIGHT_SLEEP_AFTER_HOUR 23
 #define NIGHT_SLEEP_BEFORE_HOUR 5
 #define NIGHT_SLEEP_FOR_M 45
+// Idle CPU clock, ported from InkWatchy's CPU_SPEED idea (setCpuFrequencyMhz
+// instead of the default 240MHz). Almost the entire awake cycle is either
+// delay(10) button-polling loops or waiting on I2C/SPI/WiFi I/O, none of
+// which is CPU-bound, so a slower clock draws less current for the same
+// wall-clock work. 80 is Espressif's documented floor for stable WiFi/BT -
+// do NOT lower this further, WiFi Setup/Sync NTP/Weather/GitHub Update all
+// depend on it.
+#define CPU_FREQ_MHZ 80
 // wifi
 #define WIFI_AP_TIMEOUT 60          // seconds with zero AP clients connected before the setup portal auto-shuts-down
 #define WIFI_AP_SSID    "PicoWatch AP"

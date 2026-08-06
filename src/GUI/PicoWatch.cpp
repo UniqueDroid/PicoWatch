@@ -354,6 +354,7 @@ RTC_DATA_ATTR uint32_t lastIPAddress;
 RTC_DATA_ATTR char lastSSID[30];
 
 void PicoWatch::init(String datetime) {
+  setCpuFrequencyMhz(CPU_FREQ_MHZ); // see config.h - keep >=80 for WiFi/BT
   esp_sleep_wakeup_cause_t wakeup_reason;
   wakeup_reason = esp_sleep_get_wakeup_cause(); // get wake up reason
   #ifdef ARDUINO_ESP32S3_DEV
@@ -2734,7 +2735,7 @@ void PicoWatch::setupWifi() {
       server.on("/github-update", HTTP_POST, [&]() {
         if (!requireAuth()) return;
         server.send(200, "text/html",
-                     themedPage("GitHub Update",
+                     themedPage("Online Update",
                                 "<div class='msg P'>Starting GitHub update check&hellip;<br/>"
                                 "Watch the device screen for progress.</div>"));
         updateFromGithub(); // blocking; reboots on success, falls through here on failure
@@ -2787,7 +2788,7 @@ void PicoWatch::setupWifi() {
       String fullMenu = "<div class='msg S'><strong>Connected</strong> to " + String(lastSSID) + "</div>"
                         "<h3>Firmware Update</h3><hr>"
                         "<form method='POST' action='/github-update'>"
-                        "<button type='submit'>Check GitHub &amp; Flash</button></form>"
+                        "<button type='submit'>Check for Online Update</button></form>"
                         "<hr>"
                         "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
                         "<input type='file' name='update' accept='.bin'>"
