@@ -341,6 +341,7 @@ GxEPD2_BW<PicoWatchDisplay, PicoWatchDisplay::HEIGHT> PicoWatch::display(
 RTC_DATA_ATTR int guiState;
 RTC_DATA_ATTR int menuIndex;
 RTC_DATA_ATTR int settingsMenuIndex;
+RTC_DATA_ATTR int gamesMenuIndex;
 RTC_DATA_ATTR BMA423 sensor;
 RTC_DATA_ATTR bool WIFI_CONFIGURED;
 RTC_DATA_ATTR bool BLE_CONFIGURED;
@@ -527,7 +528,29 @@ void dispatchTopMenu(PicoWatch *w, int index) {
     w->showWeatherForecast();
     break;
   case 5:
+    w->showGamesMenu(gamesMenuIndex, false);
+    break;
+  case 6:
     w->showSettingsMenu(settingsMenuIndex, false);
+    break;
+  default:
+    break;
+  }
+}
+
+void dispatchGamesMenu(PicoWatch *w, int index) {
+  switch (index) {
+  case 0:
+    w->playSnake();
+    break;
+  case 1:
+    w->playPong();
+    break;
+  case 2:
+    w->playTetris();
+    break;
+  case 3:
+    w->playFlappy();
     break;
   default:
     break;
@@ -633,6 +656,8 @@ void PicoWatch::handleButtonPress() {
       if (guiState == WATCHFACE_STATE) return;
     } else if (guiState == SETTINGS_MENU_STATE) { // select settings submenu item
       dispatchSettingsMenu(this, settingsMenuIndex);
+    } else if (guiState == GAMES_MENU_STATE) { // select games submenu item
+      dispatchGamesMenu(this, gamesMenuIndex);
     } /*else if (guiState == FW_UPDATE_STATE) {
       updateFWBegin();
     }*/
@@ -643,6 +668,8 @@ void PicoWatch::handleButtonPress() {
       RTC.read(currentTime);
       showWatchFace(false);
     } else if (guiState == SETTINGS_MENU_STATE) { // exit to top menu if already in settings
+      showMenu(menuIndex, false);
+    } else if (guiState == GAMES_MENU_STATE) { // exit to top menu if already in games
       showMenu(menuIndex, false);
     } else if (guiState == APP_STATE) {
       showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in a settings app
@@ -666,6 +693,12 @@ void PicoWatch::handleButtonPress() {
         settingsMenuIndex = SETTINGS_MENU_LENGTH - 1;
       }
       showSettingsMenu(settingsMenuIndex, true);
+    } else if (guiState == GAMES_MENU_STATE) { // increment games menu index
+      gamesMenuIndex--;
+      if (gamesMenuIndex < 0) {
+        gamesMenuIndex = GAMES_MENU_LENGTH - 1;
+      }
+      showGamesMenu(gamesMenuIndex, true);
     } else if (guiState == WATCHFACE_STATE) {
       // User-assignable short/long press action (see showButtonSettings()).
       // Measure how long the button that just woke us stays held, then
@@ -694,6 +727,12 @@ void PicoWatch::handleButtonPress() {
         settingsMenuIndex = 0;
       }
       showSettingsMenu(settingsMenuIndex, true);
+    } else if (guiState == GAMES_MENU_STATE) { // decrement games menu index
+      gamesMenuIndex++;
+      if (gamesMenuIndex > GAMES_MENU_LENGTH - 1) {
+        gamesMenuIndex = 0;
+      }
+      showGamesMenu(gamesMenuIndex, true);
     } else if (guiState == WATCHFACE_STATE) {
       // See the identical Up-button case just above for why this measures
       // press duration instead of returning immediately.
@@ -725,6 +764,8 @@ void PicoWatch::handleButtonPress() {
           if (guiState == WATCHFACE_STATE) break;
         } else if (guiState == SETTINGS_MENU_STATE) {
           dispatchSettingsMenu(this, settingsMenuIndex);
+        } else if (guiState == GAMES_MENU_STATE) {
+          dispatchGamesMenu(this, gamesMenuIndex);
         } /*else if (guiState == FW_UPDATE_STATE) {
           updateFWBegin();
         }*/
@@ -737,6 +778,8 @@ void PicoWatch::handleButtonPress() {
           break; // leave loop
         } else if (guiState == SETTINGS_MENU_STATE) {
           showMenu(menuIndex, false); // exit to top menu if already in settings
+        } else if (guiState == GAMES_MENU_STATE) {
+          showMenu(menuIndex, false); // exit to top menu if already in games
         } else if (guiState == APP_STATE) {
           showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in a settings app
         } else if (guiState == FW_UPDATE_STATE) {
@@ -756,6 +799,12 @@ void PicoWatch::handleButtonPress() {
             settingsMenuIndex = SETTINGS_MENU_LENGTH - 1;
           }
           showFastSettingsMenu(settingsMenuIndex);
+        } else if (guiState == GAMES_MENU_STATE) {
+          gamesMenuIndex--;
+          if (gamesMenuIndex < 0) {
+            gamesMenuIndex = GAMES_MENU_LENGTH - 1;
+          }
+          showFastGamesMenu(gamesMenuIndex);
         }
       } else if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
         lastTimeout = millis();
@@ -771,6 +820,12 @@ void PicoWatch::handleButtonPress() {
             settingsMenuIndex = 0;
           }
           showFastSettingsMenu(settingsMenuIndex);
+        } else if (guiState == GAMES_MENU_STATE) {
+          gamesMenuIndex++;
+          if (gamesMenuIndex > GAMES_MENU_LENGTH - 1) {
+            gamesMenuIndex = 0;
+          }
+          showFastGamesMenu(gamesMenuIndex);
         }
       }
     }
@@ -791,9 +846,11 @@ void PicoWatch::showMenu(byte menuIndex, bool partialRefresh) {
   uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
   const char *menuItems[] = {PW_MENU_CHANGE_WATCHFACE, PW_MENU_STOPWATCH, PW_MENU_STEPS,
-                             PW_MENU_ALARM,             PW_MENU_WEATHER,   PW_MENU_SETTINGS};
+                             PW_MENU_ALARM,             PW_MENU_WEATHER,   PW_MENU_GAMES,
+                             PW_MENU_SETTINGS};
   const uint8_t *const menuIcons[] = {iconWatchface, iconStopwatch, iconSteps,
-                                      iconAlarm,      iconWeather,   iconSettings};
+                                      iconAlarm,      iconWeather,   iconGames,
+                                      iconSettings};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = rowHeight + (rowHeight * i);
     display.setCursor(kMenuIconTextX, yPos);
@@ -831,9 +888,11 @@ void PicoWatch::showFastMenu(byte menuIndex) {
   uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
   const char *menuItems[] = {PW_MENU_CHANGE_WATCHFACE, PW_MENU_STOPWATCH, PW_MENU_STEPS,
-                             PW_MENU_ALARM,             PW_MENU_WEATHER,   PW_MENU_SETTINGS};
+                             PW_MENU_ALARM,             PW_MENU_WEATHER,   PW_MENU_GAMES,
+                             PW_MENU_SETTINGS};
   const uint8_t *const menuIcons[] = {iconWatchface, iconStopwatch, iconSteps,
-                                      iconAlarm,      iconWeather,   iconSettings};
+                                      iconAlarm,      iconWeather,   iconGames,
+                                      iconSettings};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = rowHeight + (rowHeight * i);
     display.setCursor(kMenuIconTextX, yPos);
@@ -963,6 +1022,290 @@ void PicoWatch::showFastSettingsMenu(byte settingsMenuIndex) {
   display.display(true);
 
   guiState = SETTINGS_MENU_STATE;
+}
+
+namespace {
+const char *const kGamesMenuItems[] = {PW_GAME_SNAKE, PW_GAME_PONG, PW_GAME_TETRIS,
+                                        PW_GAME_FLAPPY};
+const uint8_t *const kGamesMenuIcons[] = {iconGameSnake, iconGamePong, iconGameTetris,
+                                           iconGameFlappy};
+}  // namespace
+
+void PicoWatch::showGamesMenu(byte gamesMenuIndex, bool partialRefresh) {
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setFont(uiMenuFont());
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  int16_t yPos;
+  const int rowHeight = uiMenuRowHeight();
+  int16_t highlightYOffset;
+  uint16_t highlightHeightPad;
+  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
+
+  for (int i = 0; i < GAMES_MENU_LENGTH; i++) {
+    yPos = rowHeight + (rowHeight * i);
+    display.setCursor(kMenuIconTextX, yPos);
+    display.getTextBounds(kGamesMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
+    uint16_t color;
+    if (i == gamesMenuIndex) {
+      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
+      color = GxEPD_BLACK;
+    } else {
+      color = GxEPD_WHITE;
+    }
+    display.setTextColor(color);
+    display.println(kGamesMenuItems[i]);
+    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kGamesMenuIcons[i],
+                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
+  }
+
+  display.display(partialRefresh);
+
+  guiState = GAMES_MENU_STATE;
+  alreadyInMenu = false;
+}
+
+void PicoWatch::showFastGamesMenu(byte gamesMenuIndex) {
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setFont(uiMenuFont());
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  int16_t yPos;
+  const int rowHeight = uiMenuRowHeight();
+  int16_t highlightYOffset;
+  uint16_t highlightHeightPad;
+  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
+
+  for (int i = 0; i < GAMES_MENU_LENGTH; i++) {
+    yPos = rowHeight + (rowHeight * i);
+    display.setCursor(kMenuIconTextX, yPos);
+    display.getTextBounds(kGamesMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
+    uint16_t color;
+    if (i == gamesMenuIndex) {
+      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
+      color = GxEPD_BLACK;
+    } else {
+      color = GxEPD_WHITE;
+    }
+    display.setTextColor(color);
+    display.println(kGamesMenuItems[i]);
+    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kGamesMenuIcons[i],
+                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
+  }
+
+  display.display(true);
+
+  guiState = GAMES_MENU_STATE;
+}
+
+void PicoWatch::playSnake() {
+  guiState = APP_STATE;
+
+  constexpr int kCell = 10;
+  constexpr int kCols = DISPLAY_WIDTH / kCell;   // 20
+  constexpr int kRows = DISPLAY_HEIGHT / kCell;  // 20
+  constexpr int kMaxLen = kCols * kRows;
+  constexpr unsigned long kTickMs = 500;
+  // Clockwise direction cycle so "turn right" is always (dir+1)%4 and "turn
+  // left" is (dir+3)%4, regardless of current heading - avoids a 4-way
+  // lookup table for what only needs modular arithmetic.
+  enum Direction { DIR_UP, DIR_RIGHT, DIR_DOWN, DIR_LEFT };
+  constexpr int8_t kDx[4] = {0, 1, 0, -1};
+  constexpr int8_t kDy[4] = {-1, 0, 1, 0};
+
+  static int8_t snakeX[kMaxLen];
+  static int8_t snakeY[kMaxLen];
+  int length = 3;
+  int headIdx = 0; // snake[0] is the head; body shifts down as it grows/moves
+  snakeX[0] = kCols / 2;
+  snakeY[0] = kRows / 2;
+  snakeX[1] = snakeX[0] - 1;
+  snakeY[1] = snakeY[0];
+  snakeX[2] = snakeX[0] - 2;
+  snakeY[2] = snakeY[0];
+  int direction = DIR_RIGHT;
+  int score = 0;
+
+  int foodX, foodY;
+  auto placeFood = [&]() {
+    bool onSnake;
+    do {
+      foodX = random(kCols);
+      foodY = random(kRows);
+      onSnake = false;
+      for (int i = 0; i < length; i++) {
+        if (snakeX[i] == foodX && snakeY[i] == foodY) {
+          onSnake = true;
+          break;
+        }
+      }
+    } while (onSnake);
+  };
+  placeFood();
+
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(DOWN_BTN_PIN, INPUT);
+  // Same button-bounce hazard as showStopwatch() - Menu was just used to
+  // select "Snake" from the games menu.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  bool gameOver = false;
+  unsigned long lastTick = millis();
+  bool paused = false;
+  while (!gameOver) {
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
+      showGamesMenu(gamesMenuIndex, false);
+      return;
+    }
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      paused = !paused;
+      while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+    // Up/Down turn relative to current heading (see Direction enum above) -
+    // this watch only has 2 directional buttons, not a 4-way d-pad, so
+    // Snake steers like a classic 2-button "always moving forward" game
+    // instead of picking an absolute direction.
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      direction = (direction + 3) % 4; // turn left
+      while (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      direction = (direction + 1) % 4; // turn right
+      while (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+
+    if (!paused && millis() - lastTick >= kTickMs) {
+      lastTick = millis();
+
+      int newX = snakeX[0] + kDx[direction];
+      int newY = snakeY[0] + kDy[direction];
+
+      if (newX < 0 || newX >= kCols || newY < 0 || newY >= kRows) {
+        gameOver = true;
+      } else {
+        for (int i = 0; i < length; i++) {
+          if (snakeX[i] == newX && snakeY[i] == newY) {
+            gameOver = true;
+            break;
+          }
+        }
+      }
+
+      if (!gameOver) {
+        const bool ate = (newX == foodX && newY == foodY);
+        const int newLength = ate ? length + 1 : length;
+        if (newLength <= kMaxLen) {
+          for (int i = newLength - 1; i > 0; i--) {
+            snakeX[i] = snakeX[i - 1];
+            snakeY[i] = snakeY[i - 1];
+          }
+          snakeX[0] = newX;
+          snakeY[0] = newY;
+          length = newLength;
+          if (ate) {
+            score++;
+            placeFood();
+          }
+        } else {
+          gameOver = true; // filled the entire board - effectively a win
+        }
+      }
+
+      if (!gameOver) {
+        display.fillScreen(GxEPD_BLACK);
+        for (int i = 0; i < length; i++) {
+          display.fillRect(snakeX[i] * kCell, snakeY[i] * kCell, kCell - 1, kCell - 1, GxEPD_WHITE);
+        }
+        display.fillRect(foodX * kCell + 2, foodY * kCell + 2, kCell - 5, kCell - 5, GxEPD_WHITE);
+        display.display(true);
+      }
+    }
+  }
+
+  display.fillScreen(GxEPD_BLACK);
+  display.setTextColor(GxEPD_WHITE);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(20, 90);
+  display.println(PW_GAME_OVER);
+  display.setCursor(20, 115);
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%s%d", PW_GAME_SCORE_LABEL, score);
+  display.println(buf);
+  display.display(false);
+  delay(1500); // let the score register before returning to the menu
+
+  showGamesMenu(gamesMenuIndex, false);
+}
+
+void PicoWatch::playPong() {
+  guiState = APP_STATE;
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setTextColor(GxEPD_WHITE);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(20, 90);
+  display.println(PW_GAME_PONG);
+  display.setCursor(20, 115);
+  display.println(PW_GAME_COMING_SOON);
+  display.display(false);
+
+  pinMode(BACK_BTN_PIN, INPUT);
+  while (digitalRead(BACK_BTN_PIN) != ACTIVE_LOW) {
+    delay(50);
+  }
+  while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
+  showGamesMenu(gamesMenuIndex, false);
+}
+
+void PicoWatch::playTetris() {
+  guiState = APP_STATE;
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setTextColor(GxEPD_WHITE);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(20, 90);
+  display.println(PW_GAME_TETRIS);
+  display.setCursor(20, 115);
+  display.println(PW_GAME_COMING_SOON);
+  display.display(false);
+
+  pinMode(BACK_BTN_PIN, INPUT);
+  while (digitalRead(BACK_BTN_PIN) != ACTIVE_LOW) {
+    delay(50);
+  }
+  while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
+  showGamesMenu(gamesMenuIndex, false);
+}
+
+void PicoWatch::playFlappy() {
+  guiState = APP_STATE;
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setTextColor(GxEPD_WHITE);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(20, 90);
+  display.println(PW_GAME_FLAPPY);
+  display.setCursor(20, 115);
+  display.println(PW_GAME_COMING_SOON);
+  display.display(false);
+
+  pinMode(BACK_BTN_PIN, INPUT);
+  while (digitalRead(BACK_BTN_PIN) != ACTIVE_LOW) {
+    delay(50);
+  }
+  while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
+  showGamesMenu(gamesMenuIndex, false);
 }
 
 void PicoWatch::_captureStepsAtMidnight() {

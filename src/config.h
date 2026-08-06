@@ -130,9 +130,11 @@
 #define APP_STATE           1
 #define FW_UPDATE_STATE     2
 #define SETTINGS_MENU_STATE 3
+#define GAMES_MENU_STATE    4
 #define MENU_HEIGHT     25
-#define MENU_LENGTH     6           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Weather, Settings
+#define MENU_LENGTH     7           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Weather, Games, Settings
 #define SETTINGS_MENU_LENGTH 12     // About, Vibrate, Accelerometer, Set Time, WiFi, Sync NTP, Set Timezone, Set City, Update via GitHub, Button Settings, Font Size, Language
+#define GAMES_MENU_LENGTH 4         // Snake, Pong, Tetris, Flappy
 // Scrolling window size is computed at runtime as DISPLAY_HEIGHT / row
 // height (see uiSettingsVisibleRows() in PicoWatch.cpp) instead of a fixed
 // constant, so it fills the screen edge-to-edge (no empty black bar at the

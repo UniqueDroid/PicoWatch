@@ -95,6 +95,16 @@ public:
   // SETTINGS_MENU_LENGTH items and SETTINGS_MENU_STATE.
   void showSettingsMenu(byte settingsMenuIndex, bool partialRefresh);
   void showFastSettingsMenu(byte settingsMenuIndex);
+  // Games submenu (Snake/Pong/Tetris/Flappy) - reached via the top-level
+  // "Games" entry, same list-rendering pattern as showSettingsMenu() but
+  // for GAMES_MENU_LENGTH items and GAMES_MENU_STATE. Fits on screen at
+  // every font size without scrolling (only 4 entries).
+  void showGamesMenu(byte gamesMenuIndex, bool partialRefresh);
+  void showFastGamesMenu(byte gamesMenuIndex);
+  void playSnake();
+  void playPong();
+  void playTetris();
+  void playFlappy();
   void showAbout();
   void showBuzz();
   void showAccelerometer();

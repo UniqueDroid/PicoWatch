@@ -169,6 +169,16 @@ const char *const kLocalizedStrings_xx[PW_STR_COUNT] = {
   "Current Time Is:",  // PW_NTP_CURRENT_TIME
   "NTP Sync Failed",  // PW_NTP_FAILED
   "WiFi Not Configured",  // PW_NTP_WIFI_NOT_CONFIGURED
+  // Games menu (PicoWatch::showGamesMenu()/showFastGamesMenu())
+  "Games",  // PW_STR_MENU_GAMES
+  "Snake",  // PW_STR_GAME_SNAKE
+  "Pong",  // PW_STR_GAME_PONG
+  "Tetris",  // PW_STR_GAME_TETRIS
+  "Flappy",  // PW_STR_GAME_FLAPPY
+  "Paused",  // PW_STR_GAME_PAUSED
+  "Game Over",  // PW_STR_GAME_OVER
+  "Score: ",  // PW_STR_GAME_SCORE_LABEL
+  "Coming soon",  // PW_STR_GAME_COMING_SOON
 };
 
 // 7-day steps history labels (separate from the table above since it's an
