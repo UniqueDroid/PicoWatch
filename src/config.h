@@ -91,6 +91,15 @@
 //display
 #define DISPLAY_WIDTH 200
 #define DISPLAY_HEIGHT 200
+// Night wake-interval reduction (PicoWatch::deepSleep(), V3/ESP32-S3 timer
+// wakeup path only) - ported from InkWatchy's NIGHT_SLEEP_* defines. Instead
+// of waking every single minute to redraw the watchface, wake only every
+// NIGHT_SLEEP_FOR_M minutes between NIGHT_SLEEP_AFTER_HOUR and
+// NIGHT_SLEEP_BEFORE_HOUR (24h, AFTER > BEFORE spans midnight) - saves
+// battery while asleep, button/USB wake still works normally throughout.
+#define NIGHT_SLEEP_AFTER_HOUR 23
+#define NIGHT_SLEEP_BEFORE_HOUR 5
+#define NIGHT_SLEEP_FOR_M 45
 // wifi
 #define WIFI_AP_TIMEOUT 60          // seconds with zero AP clients connected before the setup portal auto-shuts-down
 #define WIFI_AP_SSID    "PicoWatch AP"

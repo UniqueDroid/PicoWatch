@@ -456,8 +456,36 @@ void PicoWatch::deepSleep() {
   //rtc_clk_slow_freq_set(RTC_SLOW_FREQ_32K_XTAL);
   struct tm timeinfo;
   getLocalTime(&timeinfo);
-  int secToNextMin = 60 - timeinfo.tm_sec;
-  esp_sleep_enable_timer_wakeup(secToNextMin * uS_TO_S_FACTOR);
+  int secToNextWake = 60 - timeinfo.tm_sec; // next full minute, as before
+  // NIGHT_SLEEP_AFTER_HOUR > NIGHT_SLEEP_BEFORE_HOUR means the night window
+  // spans midnight (e.g. 23 > 5 covers 23:00-04:59).
+  bool isNight = NIGHT_SLEEP_AFTER_HOUR > NIGHT_SLEEP_BEFORE_HOUR
+                     ? (timeinfo.tm_hour >= NIGHT_SLEEP_AFTER_HOUR ||
+                        timeinfo.tm_hour < NIGHT_SLEEP_BEFORE_HOUR)
+                     : (timeinfo.tm_hour >= NIGHT_SLEEP_AFTER_HOUR &&
+                        timeinfo.tm_hour < NIGHT_SLEEP_BEFORE_HOUR);
+  if (isNight && NIGHT_SLEEP_FOR_M > 1) {
+    // Align to minutes-since-midnight (not minutes-within-the-hour) so
+    // NIGHT_SLEEP_FOR_M=45 always lands on 00:00 exactly, regardless of
+    // which hour sleep started in - 00:00 is always a multiple of any
+    // interval, keeping _captureStepsAtMidnight()'s exact-minute check
+    // reliable even though most other wakes get skipped.
+    int minutesSinceMidnight = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    int extraMinutes =
+        NIGHT_SLEEP_FOR_M - 1 - (minutesSinceMidnight % NIGHT_SLEEP_FOR_M);
+    // Never sleep past an enabled alarm's target time, so it still fires
+    // even if it falls inside the night window.
+    if (alarmEnabled) {
+      int alarmMinutesSinceMidnight = alarmHour * 60 + alarmMinute;
+      int minutesUntilAlarm = alarmMinutesSinceMidnight - minutesSinceMidnight;
+      if (minutesUntilAlarm <= 0) minutesUntilAlarm += 24 * 60;
+      if (minutesUntilAlarm - 1 < extraMinutes) {
+        extraMinutes = minutesUntilAlarm - 1;
+      }
+    }
+    secToNextWake += extraMinutes * 60;
+  }
+  esp_sleep_enable_timer_wakeup(secToNextWake * uS_TO_S_FACTOR);
   #else
   // Set GPIOs 0-39 to input to avoid power leaking out
   const uint64_t ignore = 0b11110001000000110000100111000010; // Ignore some GPIOs due to resets
