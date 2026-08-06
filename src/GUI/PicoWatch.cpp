@@ -2,6 +2,7 @@
 #include "localization.h"
 #include "MenuIcons.h"
 #include <Preferences.h>
+#include <cstring> // memset/memcpy - PicoWatch::playTetris()'s board
 #include <mbedtls/sha256.h> // SHA256 verification for GitHub OTA - see PicoWatch::updateFromGithub()
 #include <Fonts/FreeMonoBold12pt7b.h> // "Big" menu font size - see PicoWatch::showFontSizeSettings()
 
@@ -1647,23 +1648,228 @@ void PicoWatch::playPong() {
   showGamesMenu(gamesMenuIndex, false);
 }
 
+namespace {
+// Piece tables ported verbatim from Jan's PicoRead project
+// (~/Projekte/PicoRead/src/activities/home/TetrisGameActivity.cpp) - same
+// plain in-place rotation with no SRS wall-kicks (a rotation that doesn't
+// fit is just rejected), same board dimensions (standard 10x20).
+struct TetrisCell {
+  int8_t dx, dy;
+};
+using TetrisRotation = TetrisCell[4];
+constexpr int kTetrisPieceCount = 7;
+constexpr TetrisRotation kTetrisPieces[kTetrisPieceCount][4] = {
+    // I
+    {{{0, 1}, {1, 1}, {2, 1}, {3, 1}},
+     {{2, 0}, {2, 1}, {2, 2}, {2, 3}},
+     {{0, 1}, {1, 1}, {2, 1}, {3, 1}},
+     {{2, 0}, {2, 1}, {2, 2}, {2, 3}}},
+    // O
+    {{{1, 0}, {2, 0}, {1, 1}, {2, 1}},
+     {{1, 0}, {2, 0}, {1, 1}, {2, 1}},
+     {{1, 0}, {2, 0}, {1, 1}, {2, 1}},
+     {{1, 0}, {2, 0}, {1, 1}, {2, 1}}},
+    // T
+    {{{0, 1}, {1, 1}, {2, 1}, {1, 0}},
+     {{1, 0}, {1, 1}, {1, 2}, {2, 1}},
+     {{0, 1}, {1, 1}, {2, 1}, {1, 2}},
+     {{1, 0}, {1, 1}, {1, 2}, {0, 1}}},
+    // S
+    {{{1, 0}, {2, 0}, {0, 1}, {1, 1}},
+     {{1, 0}, {1, 1}, {2, 1}, {2, 2}},
+     {{1, 0}, {2, 0}, {0, 1}, {1, 1}},
+     {{1, 0}, {1, 1}, {2, 1}, {2, 2}}},
+    // Z
+    {{{0, 0}, {1, 0}, {1, 1}, {2, 1}},
+     {{2, 0}, {1, 1}, {2, 1}, {1, 2}},
+     {{0, 0}, {1, 0}, {1, 1}, {2, 1}},
+     {{2, 0}, {1, 1}, {2, 1}, {1, 2}}},
+    // J
+    {{{0, 0}, {0, 1}, {1, 1}, {2, 1}},
+     {{1, 0}, {2, 0}, {1, 1}, {1, 2}},
+     {{0, 1}, {1, 1}, {2, 1}, {2, 2}},
+     {{1, 0}, {1, 1}, {1, 2}, {0, 2}}},
+    // L
+    {{{2, 0}, {0, 1}, {1, 1}, {2, 1}},
+     {{1, 0}, {1, 1}, {1, 2}, {2, 2}},
+     {{0, 1}, {1, 1}, {2, 1}, {0, 2}},
+     {{0, 0}, {1, 0}, {1, 1}, {1, 2}}},
+};
+constexpr int kTetrisLineScore[5] = {0, 100, 300, 500, 800};
+}  // namespace
+
+// Controls (confirmed with Jan given no left/right buttons on this
+// hardware): Up = shift left, Down = shift right, Menu = rotate, Back =
+// exit. No manual soft/hard drop - the piece just falls at the normal
+// tick rate, which is plenty since e-ink can't show a "fast drop" as
+// anything meaningfully different anyway. Board is the standard 10x20;
+// at 10px cells that's a 100x200 field, flush against this display's full
+// 200px height with 100px left over on the right for the score.
 void PicoWatch::playTetris() {
   guiState = APP_STATE;
+
+  constexpr int kBoardCols = 10;
+  constexpr int kBoardRows = 20;
+  constexpr int kCellSize = 10;
+  constexpr unsigned long kTickMs = 700;
+
+  static uint8_t board[kBoardRows][kBoardCols];
+  static uint8_t scratchBoard[kBoardRows][kBoardCols];
+  memset(board, 0, sizeof(board));
+
+  int pieceType = random(kTetrisPieceCount);
+  int nextPieceType = random(kTetrisPieceCount);
+  int rotation = 0;
+  int pieceX = 0, pieceY = 0;
+  int score = 0;
+  bool gameOver = false;
+
+  auto pieceFits = [&](int type, int rot, int x, int y) {
+    for (const auto &cell : kTetrisPieces[type][rot]) {
+      const int col = x + cell.dx;
+      const int row = y + cell.dy;
+      if (col < 0 || col >= kBoardCols || row >= kBoardRows) return false;
+      if (row >= 0 && board[row][col]) return false;
+    }
+    return true;
+  };
+  auto spawnPiece = [&]() {
+    pieceType = nextPieceType;
+    nextPieceType = random(kTetrisPieceCount);
+    rotation = 0;
+    pieceX = kBoardCols / 2 - 2;
+    pieceY = -1;
+  };
+  spawnPiece();
+
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(DOWN_BTN_PIN, INPUT);
+  // Same button-bounce hazard as the other games - Menu was just used to
+  // select "Tetris" from the games menu.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
   display.setFullWindow();
+
+  unsigned long lastTick = millis();
+  while (!gameOver) {
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
+      showGamesMenu(gamesMenuIndex, false);
+      return;
+    }
+    bool moved = false;
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      const int newRotation = (rotation + 1) % 4;
+      if (pieceFits(pieceType, newRotation, pieceX, pieceY)) {
+        rotation = newRotation;
+        moved = true;
+      }
+      while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      if (pieceFits(pieceType, rotation, pieceX - 1, pieceY)) {
+        pieceX--;
+        moved = true;
+      }
+      while (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      if (pieceFits(pieceType, rotation, pieceX + 1, pieceY)) {
+        pieceX++;
+        moved = true;
+      }
+      while (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+
+    const unsigned long now = millis();
+    const bool tickDue = now - lastTick >= kTickMs;
+    if (tickDue || moved) {
+      if (tickDue) {
+        lastTick = now;
+        if (pieceFits(pieceType, rotation, pieceX, pieceY + 1)) {
+          pieceY++;
+        } else {
+          for (const auto &cell : kTetrisPieces[pieceType][rotation]) {
+            const int col = pieceX + cell.dx;
+            const int row = pieceY + cell.dy;
+            if (row >= 0 && row < kBoardRows && col >= 0 && col < kBoardCols) {
+              board[row][col] = 1;
+            }
+          }
+          memset(scratchBoard, 0, sizeof(scratchBoard));
+          int writeRow = kBoardRows - 1;
+          int cleared = 0;
+          for (int row = kBoardRows - 1; row >= 0; row--) {
+            bool full = true;
+            for (int col = 0; col < kBoardCols; col++) {
+              if (!board[row][col]) {
+                full = false;
+                break;
+              }
+            }
+            if (full) {
+              cleared++;
+              continue;
+            }
+            for (int col = 0; col < kBoardCols; col++) scratchBoard[writeRow][col] = board[row][col];
+            writeRow--;
+          }
+          memcpy(board, scratchBoard, sizeof(board));
+          if (cleared > 0) {
+            score += kTetrisLineScore[min(cleared, 4)];
+          }
+          spawnPiece();
+          if (!pieceFits(pieceType, rotation, pieceX, pieceY)) {
+            gameOver = true;
+          }
+        }
+      }
+
+      if (!gameOver) {
+        display.fillScreen(GxEPD_BLACK);
+        for (int row = 0; row < kBoardRows; row++) {
+          for (int col = 0; col < kBoardCols; col++) {
+            if (board[row][col]) {
+              display.fillRect(col * kCellSize + 1, row * kCellSize + 1, kCellSize - 2, kCellSize - 2,
+                                GxEPD_WHITE);
+            }
+          }
+        }
+        for (const auto &cell : kTetrisPieces[pieceType][rotation]) {
+          const int col = pieceX + cell.dx;
+          const int row = pieceY + cell.dy;
+          if (row >= 0 && row < kBoardRows && col >= 0 && col < kBoardCols) {
+            display.fillRect(col * kCellSize + 1, row * kCellSize + 1, kCellSize - 2, kCellSize - 2,
+                              GxEPD_WHITE);
+          }
+        }
+        display.setTextColor(GxEPD_WHITE);
+        display.setFont(&FreeMonoBold9pt7b);
+        display.setCursor(kBoardCols * kCellSize + 5, 20);
+        char scoreBuf[16];
+        snprintf(scoreBuf, sizeof(scoreBuf), "%d", score);
+        display.print(scoreBuf);
+        display.display(true);
+      }
+    }
+  }
+
   display.fillScreen(GxEPD_BLACK);
   display.setTextColor(GxEPD_WHITE);
   display.setFont(&FreeMonoBold9pt7b);
   display.setCursor(20, 90);
-  display.println(PW_GAME_TETRIS);
+  display.println(PW_GAME_OVER);
   display.setCursor(20, 115);
-  display.println(PW_GAME_COMING_SOON);
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%s%d", PW_GAME_SCORE_LABEL, score);
+  display.println(buf);
   display.display(false);
+  delay(1500);
 
-  pinMode(BACK_BTN_PIN, INPUT);
-  while (digitalRead(BACK_BTN_PIN) != ACTIVE_LOW) {
-    delay(50);
-  }
-  while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
   showGamesMenu(gamesMenuIndex, false);
 }
 
