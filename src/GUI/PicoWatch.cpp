@@ -1529,23 +1529,121 @@ void PicoWatch::playSnake() {
   showGamesMenu(gamesMenuIndex, false);
 }
 
+// No PicoRead reference for this one (unlike Snake/Flappy/Tetris) - built
+// from scratch as solo "wall pong": a single right-side paddle the player
+// moves with Up/Down (held, not a single toggle like Snake's turns - this
+// wants continuous movement while held), ball bounces off the top/bottom/
+// left walls, game over when it gets past the paddle on the right.
 void PicoWatch::playPong() {
   guiState = APP_STATE;
+
+  constexpr int kPaddleThickness = 8;
+  constexpr int kPaddleHeight = 40;
+  constexpr int kPaddleX = DISPLAY_WIDTH - kPaddleThickness;
+  constexpr int kPaddleStep = 12;
+  constexpr int kBallSize = 8;
+  constexpr int kBallStep = 10;
+  constexpr unsigned long kTickMs = 300;
+
+  int paddleY = (DISPLAY_HEIGHT - kPaddleHeight) / 2;
+  int ballX = DISPLAY_WIDTH / 3;
+  int ballY = DISPLAY_HEIGHT / 2;
+  int ballVX = -kBallStep;
+  int ballVY = kBallStep;
+  int score = 0;
+  bool gameOver = false;
+
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(DOWN_BTN_PIN, INPUT);
+  // Same button-bounce hazard as playSnake()/playFlappy() - Menu was just
+  // used to select "Pong" from the games menu.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
   display.setFullWindow();
+
+  bool paused = false;
+  unsigned long lastTick = millis();
+  while (!gameOver) {
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
+      showGamesMenu(gamesMenuIndex, false);
+      return;
+    }
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      paused = !paused;
+      while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+    // Deliberately no wait-for-release here, unlike Snake's turn/Flappy's
+    // flap - holding Up/Down should move the paddle continuously.
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      paddleY -= kPaddleStep;
+      if (paddleY < 0) paddleY = 0;
+    }
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      paddleY += kPaddleStep;
+      if (paddleY > DISPLAY_HEIGHT - kPaddleHeight) paddleY = DISPLAY_HEIGHT - kPaddleHeight;
+    }
+
+    if (!paused && millis() - lastTick >= kTickMs) {
+      lastTick = millis();
+
+      ballX += ballVX;
+      ballY += ballVY;
+
+      if (ballY <= 0) {
+        ballY = 0;
+        ballVY = -ballVY;
+      } else if (ballY + kBallSize >= DISPLAY_HEIGHT) {
+        ballY = DISPLAY_HEIGHT - kBallSize;
+        ballVY = -ballVY;
+      }
+      if (ballX <= 0) {
+        ballX = 0;
+        ballVX = -ballVX;
+      }
+
+      if (ballX + kBallSize >= kPaddleX) {
+        const bool paddleHit = ballY + kBallSize > paddleY && ballY < paddleY + kPaddleHeight;
+        if (paddleHit) {
+          ballX = kPaddleX - kBallSize;
+          ballVX = -ballVX;
+          score++;
+        } else if (ballX > DISPLAY_WIDTH) {
+          gameOver = true;
+        }
+      }
+
+      if (!gameOver) {
+        display.fillScreen(GxEPD_BLACK);
+        display.fillRect(kPaddleX, paddleY, kPaddleThickness, kPaddleHeight, GxEPD_WHITE);
+        display.fillRect(ballX, ballY, kBallSize, kBallSize, GxEPD_WHITE);
+        display.setTextColor(GxEPD_WHITE);
+        display.setFont(&FreeMonoBold9pt7b);
+        display.setCursor(2, 12);
+        char scoreBuf[16];
+        snprintf(scoreBuf, sizeof(scoreBuf), "%d", score);
+        display.print(scoreBuf);
+        display.display(true);
+      }
+    }
+  }
+
   display.fillScreen(GxEPD_BLACK);
   display.setTextColor(GxEPD_WHITE);
   display.setFont(&FreeMonoBold9pt7b);
   display.setCursor(20, 90);
-  display.println(PW_GAME_PONG);
+  display.println(PW_GAME_OVER);
   display.setCursor(20, 115);
-  display.println(PW_GAME_COMING_SOON);
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%s%d", PW_GAME_SCORE_LABEL, score);
+  display.println(buf);
   display.display(false);
+  delay(1500);
 
-  pinMode(BACK_BTN_PIN, INPUT);
-  while (digitalRead(BACK_BTN_PIN) != ACTIVE_LOW) {
-    delay(50);
-  }
-  while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
   showGamesMenu(gamesMenuIndex, false);
 }
 
@@ -1569,23 +1667,135 @@ void PicoWatch::playTetris() {
   showGamesMenu(gamesMenuIndex, false);
 }
 
+// Core rules ported from Jan's PicoRead project
+// (~/Projekte/PicoRead/src/activities/home/FlappyGameActivity.cpp) - same
+// tick-and-redraw shape (that codebase hits the same "e-ink is too slow for
+// a real animation loop" wall we do), scaled down from its 800x480 screen
+// to this watch's 200x200 one. Single button (Up = flap) instead of
+// PicoRead's dedicated Confirm button - this hardware doesn't have one to
+// spare once Back/Menu are reserved for exit/pause.
 void PicoWatch::playFlappy() {
   guiState = APP_STATE;
+
+  constexpr int kFieldTop = 20;                        // leaves room for the score line above
+  constexpr int kFieldHeight = DISPLAY_HEIGHT - kFieldTop;
+  constexpr int kBirdSize = 12;
+  constexpr int kBirdX = 30;
+  constexpr int kPipeWidth = 20;
+  constexpr int kPipeGapHeight = 70;
+  constexpr int kFlapStep = 20;
+  constexpr int kGravityStep = 8;
+  constexpr int kPipeSpeedStep = 12;
+  constexpr unsigned long kTickMs = 400;
+
+  bool gameOver = false;
+  bool started = false; // pipe stays put until the first flap, like the reference
+  bool flapLatched = false;
+  int score = 0;
+  int birdY = kFieldHeight / 2;
+  int pipeX = 0;
+  int pipeGapY = 0;
+
+  auto spawnPipe = [&]() {
+    pipeX = DISPLAY_WIDTH;
+    constexpr int margin = 15;
+    constexpr int range = kFieldHeight - kPipeGapHeight - 2 * margin;
+    pipeGapY = margin + (range > 0 ? random(range) : 0);
+  };
+  spawnPipe();
+
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  // Same button-bounce hazard as playSnake() - Menu was just used to select
+  // "Flappy" from the games menu.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
   display.setFullWindow();
+
+  bool paused = false;
+  unsigned long lastTick = millis();
+  while (!gameOver) {
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
+      showGamesMenu(gamesMenuIndex, false);
+      return;
+    }
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      paused = !paused;
+      while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      flapLatched = true;
+      while (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+
+    if (!paused && millis() - lastTick >= kTickMs) {
+      lastTick = millis();
+
+      if (flapLatched) {
+        started = true;
+        birdY -= kFlapStep;
+        if (birdY < 0) birdY = 0;
+        flapLatched = false;
+      } else if (started) {
+        birdY += kGravityStep;
+      }
+
+      if (birdY + kBirdSize >= kFieldHeight) {
+        birdY = kFieldHeight - kBirdSize;
+        if (started) gameOver = true;
+      }
+
+      if (started && !gameOver) {
+        pipeX -= kPipeSpeedStep;
+        if (pipeX + kPipeWidth < 0) {
+          score++;
+          spawnPipe();
+        } else {
+          const bool birdInPipeX = kBirdX + kBirdSize > pipeX && kBirdX < pipeX + kPipeWidth;
+          if (birdInPipeX) {
+            const bool inGap = birdY > pipeGapY && birdY + kBirdSize < pipeGapY + kPipeGapHeight;
+            if (!inGap) gameOver = true;
+          }
+        }
+      }
+
+      if (!gameOver) {
+        display.fillScreen(GxEPD_BLACK);
+        display.setTextColor(GxEPD_WHITE);
+        display.setFont(&FreeMonoBold9pt7b);
+        display.setCursor(2, 12);
+        char scoreBuf[16];
+        snprintf(scoreBuf, sizeof(scoreBuf), "%d", score);
+        display.print(scoreBuf);
+
+        if (pipeX + kPipeWidth > 0 && pipeX < DISPLAY_WIDTH) {
+          display.fillRect(pipeX, kFieldTop, kPipeWidth, pipeGapY, GxEPD_WHITE);
+          display.fillRect(pipeX, kFieldTop + pipeGapY + kPipeGapHeight, kPipeWidth,
+                            kFieldHeight - pipeGapY - kPipeGapHeight, GxEPD_WHITE);
+        }
+        display.fillRect(kBirdX, kFieldTop + birdY, kBirdSize, kBirdSize, GxEPD_WHITE);
+
+        display.display(true);
+      }
+    }
+  }
+
   display.fillScreen(GxEPD_BLACK);
   display.setTextColor(GxEPD_WHITE);
   display.setFont(&FreeMonoBold9pt7b);
   display.setCursor(20, 90);
-  display.println(PW_GAME_FLAPPY);
+  display.println(PW_GAME_OVER);
   display.setCursor(20, 115);
-  display.println(PW_GAME_COMING_SOON);
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%s%d", PW_GAME_SCORE_LABEL, score);
+  display.println(buf);
   display.display(false);
+  delay(1500);
 
-  pinMode(BACK_BTN_PIN, INPUT);
-  while (digitalRead(BACK_BTN_PIN) != ACTIVE_LOW) {
-    delay(50);
-  }
-  while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
   showGamesMenu(gamesMenuIndex, false);
 }
 
