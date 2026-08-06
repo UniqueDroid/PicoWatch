@@ -161,6 +161,12 @@ const char *const kLocalizedStrings_de[PW_STR_COUNT] = {
   "Game Over",  // PW_STR_GAME_OVER
   "Punkte: ",  // PW_STR_GAME_SCORE_LABEL
   "Demnaechst",  // PW_STR_GAME_COMING_SOON
+  // Time submenu (PicoWatch::showTimeMenu()/showFastTimeMenu())
+  "Zeit",  // PW_STR_SETTINGS_TIME
+  "Vibrations-Fenster",  // PW_STR_TIME_VIBRATE_WINDOW
+  "Stuendl. Vibration",  // PW_STR_VIBWIN_TITLE
+  "Von: ",  // PW_STR_VIBWIN_FROM_LABEL
+  "Bis: ",  // PW_STR_VIBWIN_TO_LABEL
 };
 
 // 7-day steps history labels (separate from the table above since it's an

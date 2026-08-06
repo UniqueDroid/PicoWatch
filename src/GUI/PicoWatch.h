@@ -105,6 +105,16 @@ public:
   void playPong();
   void playTetris();
   void playFlappy();
+  // Time submenu (Set Time/Sync NTP/Set Timezone/Vibrate Window) - reached
+  // via the Settings menu's "Time" entry, groups the previously separate
+  // top-level Settings entries together. Same list-rendering pattern as
+  // showGamesMenu() but for TIME_MENU_LENGTH items and TIME_MENU_STATE.
+  void showTimeMenu(byte timeMenuIndex, bool partialRefresh);
+  void showFastTimeMenu(byte timeMenuIndex);
+  // From-hour/To-hour range + on/off for the hourly vibrate-on-the-tick
+  // feature (see PicoWatch::init()'s WATCHFACE_STATE tick handler),
+  // persisted in flash (NVS). Same 3-field picker pattern as setAlarm().
+  void showVibrateWindowSettings();
   void showAbout();
   void showBuzz();
   void showAccelerometer();

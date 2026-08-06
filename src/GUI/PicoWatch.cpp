@@ -13,6 +13,14 @@ RTC_DATA_ATTR uint8_t alarmHour;
 RTC_DATA_ATTR uint8_t alarmMinute;
 RTC_DATA_ATTR bool alarmEnabled;
 
+// Hourly-vibrate active window (see PicoWatch::showVibrateWindowSettings())
+// - replaces the old always-on-24/7 settings.vibrateOClock compile-time flag
+// with a runtime-adjustable time-of-day range, same caching pattern as the
+// alarm fields above.
+RTC_DATA_ATTR uint8_t vibrateWindowFromHour;
+RTC_DATA_ATTR uint8_t vibrateWindowToHour;
+RTC_DATA_ATTR bool vibrateWindowEnabled;
+
 // Weather city ID actually used at runtime (OpenWeatherMap numeric ID, see
 // https://openweathermap.org/current#cityid) - defaults to settings.cityID
 // but can be overridden on-device via PicoWatch::setWeatherCity() without a
@@ -144,6 +152,45 @@ void saveAlarm() {
   prefs.putUChar(kPrefsAlarmMinuteKey, alarmMinute);
   prefs.putBool(kPrefsAlarmEnabledKey, alarmEnabled);
   prefs.end();
+}
+
+constexpr const char *kPrefsVibWinFromKey = "vibWinFrom";
+constexpr const char *kPrefsVibWinToKey = "vibWinTo";
+constexpr const char *kPrefsVibWinEnabledKey = "vibWinOn";
+
+// Defaults (7-22, enabled per defaultEnabled - the compile-time
+// settings.vibrateOClock, passed in from init() since this free function
+// can't reach the PicoWatch instance's settings member itself) keep the
+// previous always-on-24/7 behavior's intent - vibrate on the hour - but
+// confined to typical waking hours instead of also firing all night,
+// which is the whole point of this setting existing. settings.vibrateOClock
+// is no longer consulted once this has been loaded once.
+void loadVibrateWindow(bool defaultEnabled) {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  vibrateWindowFromHour = prefs.getUChar(kPrefsVibWinFromKey, 7);
+  vibrateWindowToHour = prefs.getUChar(kPrefsVibWinToKey, 22);
+  vibrateWindowEnabled = prefs.getBool(kPrefsVibWinEnabledKey, defaultEnabled);
+  prefs.end();
+}
+
+void saveVibrateWindow() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putUChar(kPrefsVibWinFromKey, vibrateWindowFromHour);
+  prefs.putUChar(kPrefsVibWinToKey, vibrateWindowToHour);
+  prefs.putBool(kPrefsVibWinEnabledKey, vibrateWindowEnabled);
+  prefs.end();
+}
+
+// FromHour > ToHour means the window spans midnight (e.g. 22 -> 6 covers
+// 22:00-05:59), same convention as config.h's NIGHT_SLEEP_AFTER_HOUR/
+// NIGHT_SLEEP_BEFORE_HOUR.
+bool hourInVibrateWindow(uint8_t hour) {
+  if (vibrateWindowFromHour <= vibrateWindowToHour) {
+    return hour >= vibrateWindowFromHour && hour < vibrateWindowToHour;
+  }
+  return hour >= vibrateWindowFromHour || hour < vibrateWindowToHour;
 }
 
 constexpr const char *kPrefsBtnSwapKey = "btnSwap";
@@ -342,6 +389,7 @@ RTC_DATA_ATTR int guiState;
 RTC_DATA_ATTR int menuIndex;
 RTC_DATA_ATTR int settingsMenuIndex;
 RTC_DATA_ATTR int gamesMenuIndex;
+RTC_DATA_ATTR int timeMenuIndex;
 RTC_DATA_ATTR BMA423 sensor;
 RTC_DATA_ATTR bool WIFI_CONFIGURED;
 RTC_DATA_ATTR bool BLE_CONFIGURED;
@@ -377,11 +425,10 @@ void PicoWatch::init(String datetime) {
     switch (guiState) {
     case WATCHFACE_STATE:
       showWatchFace(true); // partial updates on tick
-      if (settings.vibrateOClock) {
-        if (currentTime.Minute == 0) {
-          // The RTC wakes us up once per minute
-          vibMotor(75, 4);
-        }
+      if (vibrateWindowEnabled && currentTime.Minute == 0 &&
+          hourInVibrateWindow(currentTime.Hour)) {
+        // The RTC wakes us up once per minute
+        vibMotor(75, 4);
       }
       _captureStepsAtMidnight();
       if (alarmEnabled && currentTime.Hour == alarmHour && currentTime.Minute == alarmMinute) {
@@ -425,6 +472,7 @@ void PicoWatch::init(String datetime) {
       gmtOffset = loadManualGmtOffset(manualOffset) ? manualOffset : settings.gmtOffset;
     }
     loadAlarm();
+    loadVibrateWindow(settings.vibrateOClock);
     loadWeatherCityID(settings.cityID);
     loadButtonSettings();
     loadFontSize();
@@ -569,34 +617,44 @@ void dispatchSettingsMenu(PicoWatch *w, int index) {
     w->showAccelerometer();
     break;
   case 3:
-    w->setTime();
+    w->showTimeMenu(timeMenuIndex, false);
     break;
   case 4:
     w->setupWifi();
     break;
-  /*case 5:
-    w->showUpdateFW();
-    break;*/
   case 5:
-    w->showSyncNTP();
-    break;
-  case 6:
-    w->setTimezone();
-    break;
-  case 7:
     w->setWeatherCity();
     break;
-  case 8:
+  case 6:
     w->updateFromGithub();
     break;
-  case 9:
+  case 7:
     w->showButtonSettings();
     break;
-  case 10:
+  case 8:
     w->showFontSizeSettings();
     break;
-  case 11:
+  case 9:
     w->showLanguageSettings();
+    break;
+  default:
+    break;
+  }
+}
+
+void dispatchTimeMenu(PicoWatch *w, int index) {
+  switch (index) {
+  case 0:
+    w->setTime();
+    break;
+  case 1:
+    w->showSyncNTP();
+    break;
+  case 2:
+    w->setTimezone();
+    break;
+  case 3:
+    w->showVibrateWindowSettings();
     break;
   default:
     break;
@@ -658,6 +716,8 @@ void PicoWatch::handleButtonPress() {
       dispatchSettingsMenu(this, settingsMenuIndex);
     } else if (guiState == GAMES_MENU_STATE) { // select games submenu item
       dispatchGamesMenu(this, gamesMenuIndex);
+    } else if (guiState == TIME_MENU_STATE) { // select time submenu item
+      dispatchTimeMenu(this, timeMenuIndex);
     } /*else if (guiState == FW_UPDATE_STATE) {
       updateFWBegin();
     }*/
@@ -671,6 +731,8 @@ void PicoWatch::handleButtonPress() {
       showMenu(menuIndex, false);
     } else if (guiState == GAMES_MENU_STATE) { // exit to top menu if already in games
       showMenu(menuIndex, false);
+    } else if (guiState == TIME_MENU_STATE) { // exit to settings menu if already in time
+      showSettingsMenu(settingsMenuIndex, false);
     } else if (guiState == APP_STATE) {
       showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in a settings app
     } else if (guiState == FW_UPDATE_STATE) {
@@ -699,6 +761,12 @@ void PicoWatch::handleButtonPress() {
         gamesMenuIndex = GAMES_MENU_LENGTH - 1;
       }
       showGamesMenu(gamesMenuIndex, true);
+    } else if (guiState == TIME_MENU_STATE) { // increment time menu index
+      timeMenuIndex--;
+      if (timeMenuIndex < 0) {
+        timeMenuIndex = TIME_MENU_LENGTH - 1;
+      }
+      showTimeMenu(timeMenuIndex, true);
     } else if (guiState == WATCHFACE_STATE) {
       // User-assignable short/long press action (see showButtonSettings()).
       // Measure how long the button that just woke us stays held, then
@@ -733,6 +801,12 @@ void PicoWatch::handleButtonPress() {
         gamesMenuIndex = 0;
       }
       showGamesMenu(gamesMenuIndex, true);
+    } else if (guiState == TIME_MENU_STATE) { // decrement time menu index
+      timeMenuIndex++;
+      if (timeMenuIndex > TIME_MENU_LENGTH - 1) {
+        timeMenuIndex = 0;
+      }
+      showTimeMenu(timeMenuIndex, true);
     } else if (guiState == WATCHFACE_STATE) {
       // See the identical Up-button case just above for why this measures
       // press duration instead of returning immediately.
@@ -766,6 +840,8 @@ void PicoWatch::handleButtonPress() {
           dispatchSettingsMenu(this, settingsMenuIndex);
         } else if (guiState == GAMES_MENU_STATE) {
           dispatchGamesMenu(this, gamesMenuIndex);
+        } else if (guiState == TIME_MENU_STATE) {
+          dispatchTimeMenu(this, timeMenuIndex);
         } /*else if (guiState == FW_UPDATE_STATE) {
           updateFWBegin();
         }*/
@@ -780,6 +856,8 @@ void PicoWatch::handleButtonPress() {
           showMenu(menuIndex, false); // exit to top menu if already in settings
         } else if (guiState == GAMES_MENU_STATE) {
           showMenu(menuIndex, false); // exit to top menu if already in games
+        } else if (guiState == TIME_MENU_STATE) {
+          showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in time
         } else if (guiState == APP_STATE) {
           showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in a settings app
         } else if (guiState == FW_UPDATE_STATE) {
@@ -805,6 +883,12 @@ void PicoWatch::handleButtonPress() {
             gamesMenuIndex = GAMES_MENU_LENGTH - 1;
           }
           showFastGamesMenu(gamesMenuIndex);
+        } else if (guiState == TIME_MENU_STATE) {
+          timeMenuIndex--;
+          if (timeMenuIndex < 0) {
+            timeMenuIndex = TIME_MENU_LENGTH - 1;
+          }
+          showFastTimeMenu(timeMenuIndex);
         }
       } else if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
         lastTimeout = millis();
@@ -826,6 +910,12 @@ void PicoWatch::handleButtonPress() {
             gamesMenuIndex = 0;
           }
           showFastGamesMenu(gamesMenuIndex);
+        } else if (guiState == TIME_MENU_STATE) {
+          timeMenuIndex++;
+          if (timeMenuIndex > TIME_MENU_LENGTH - 1) {
+            timeMenuIndex = 0;
+          }
+          showFastTimeMenu(timeMenuIndex);
         }
       }
     }
@@ -916,17 +1006,24 @@ void PicoWatch::showFastMenu(byte menuIndex) {
 }
 
 namespace {
+// Set Time/Sync NTP/Set Timezone used to be separate entries here - now
+// grouped under the single "Time" entry (see kTimeMenuItems below) to keep
+// this top-level list shorter.
 const char *const kSettingsMenuItems[] = {
     PW_SETTINGS_ABOUT,  PW_SETTINGS_VIBRATE, PW_SETTINGS_ACCELEROMETER,
-    PW_SETTINGS_SET_TIME, PW_SETTINGS_SETUP_WIFI, /*"Update Firmware",*/
-    PW_SETTINGS_SYNC_NTP, PW_SETTINGS_SET_TIMEZONE, PW_SETTINGS_SET_CITY,
+    PW_SETTINGS_TIME,   PW_SETTINGS_SETUP_WIFI, /*"Update Firmware",*/
+    PW_SETTINGS_SET_CITY,
     PW_SETTINGS_UPDATE_GITHUB, PW_SETTINGS_BUTTON_SETTINGS, PW_SETTINGS_FONT_SIZE,
     PW_SETTINGS_LANGUAGE};
 const uint8_t *const kSettingsMenuIcons[] = {
     iconAbout,  iconVibrate, iconAccel,
     iconTime,   iconWifi,
-    iconSync,   iconTimezone, iconCity,
+    iconCity,
     iconUpdate, iconButtons, iconFontSize, iconLanguage};
+
+const char *const kTimeMenuItems[] = {PW_SETTINGS_SET_TIME, PW_SETTINGS_SYNC_NTP,
+                                       PW_SETTINGS_SET_TIMEZONE, PW_TIME_VIBRATE_WINDOW};
+const uint8_t *const kTimeMenuIcons[] = {iconTime, iconSync, iconTimezone, iconVibrate};
 
 // Fitting all SETTINGS_MENU_LENGTH items on screen at once made the rows too
 // cramped to read. Instead this shows a scrolling window (sized by
@@ -1100,6 +1197,190 @@ void PicoWatch::showFastGamesMenu(byte gamesMenuIndex) {
   display.display(true);
 
   guiState = GAMES_MENU_STATE;
+}
+
+void PicoWatch::showTimeMenu(byte timeMenuIndex, bool partialRefresh) {
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setFont(uiMenuFont());
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  int16_t yPos;
+  const int rowHeight = uiMenuRowHeight();
+  int16_t highlightYOffset;
+  uint16_t highlightHeightPad;
+  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
+
+  for (int i = 0; i < TIME_MENU_LENGTH; i++) {
+    yPos = rowHeight + (rowHeight * i);
+    display.setCursor(kMenuIconTextX, yPos);
+    display.getTextBounds(kTimeMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
+    uint16_t color;
+    if (i == timeMenuIndex) {
+      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
+      color = GxEPD_BLACK;
+    } else {
+      color = GxEPD_WHITE;
+    }
+    display.setTextColor(color);
+    display.println(kTimeMenuItems[i]);
+    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kTimeMenuIcons[i],
+                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
+  }
+
+  display.display(partialRefresh);
+
+  guiState = TIME_MENU_STATE;
+  alreadyInMenu = false;
+}
+
+void PicoWatch::showFastTimeMenu(byte timeMenuIndex) {
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setFont(uiMenuFont());
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  int16_t yPos;
+  const int rowHeight = uiMenuRowHeight();
+  int16_t highlightYOffset;
+  uint16_t highlightHeightPad;
+  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
+
+  for (int i = 0; i < TIME_MENU_LENGTH; i++) {
+    yPos = rowHeight + (rowHeight * i);
+    display.setCursor(kMenuIconTextX, yPos);
+    display.getTextBounds(kTimeMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
+    uint16_t color;
+    if (i == timeMenuIndex) {
+      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
+      color = GxEPD_BLACK;
+    } else {
+      color = GxEPD_WHITE;
+    }
+    display.setTextColor(color);
+    display.println(kTimeMenuItems[i]);
+    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kTimeMenuIcons[i],
+                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
+  }
+
+  display.display(true);
+
+  guiState = TIME_MENU_STATE;
+}
+
+void PicoWatch::showVibrateWindowSettings() {
+  guiState = APP_STATE;
+
+  uint8_t fromHour = vibrateWindowFromHour;
+  uint8_t toHour = vibrateWindowToHour;
+  bool enabled = vibrateWindowEnabled;
+
+  int8_t setIndex = SET_VIBWIN_FROM;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  // Same button-bounce hazard as setAlarm() - Menu was just used to select
+  // "Vibrate Window" from the Time menu.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  while (1) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      setIndex++;
+      if (setIndex > SET_VIBWIN_ENABLED) {
+        break;
+      }
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      if (setIndex != SET_VIBWIN_FROM) {
+        setIndex--;
+      }
+    }
+
+    blink = 1 - blink;
+
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      switch (setIndex) {
+      case SET_VIBWIN_FROM:
+        fromHour == 23 ? (fromHour = 0) : fromHour++;
+        break;
+      case SET_VIBWIN_TO:
+        toHour == 23 ? (toHour = 0) : toHour++;
+        break;
+      case SET_VIBWIN_ENABLED:
+        enabled = !enabled;
+        break;
+      default:
+        break;
+      }
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      switch (setIndex) {
+      case SET_VIBWIN_FROM:
+        fromHour == 0 ? (fromHour = 23) : fromHour--;
+        break;
+      case SET_VIBWIN_TO:
+        toHour == 0 ? (toHour = 23) : toHour--;
+        break;
+      case SET_VIBWIN_ENABLED:
+        enabled = !enabled;
+        break;
+      default:
+        break;
+      }
+    }
+
+    display.fillScreen(GxEPD_BLACK);
+    display.setTextColor(GxEPD_WHITE);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(20, 25);
+    display.println(PW_VIBWIN_TITLE);
+
+    display.setCursor(5, 70);
+    display.print(PW_VIBWIN_FROM_LABEL);
+    if (setIndex == SET_VIBWIN_FROM) {
+      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    }
+    if (fromHour < 10) display.print("0");
+    display.println(fromHour);
+
+    display.setTextColor(GxEPD_WHITE);
+    display.setCursor(5, 105);
+    display.print(PW_VIBWIN_TO_LABEL);
+    if (setIndex == SET_VIBWIN_TO) {
+      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    }
+    if (toHour < 10) display.print("0");
+    display.println(toHour);
+
+    display.setTextColor(GxEPD_WHITE);
+    display.setCursor(5, 140);
+    display.print(PW_ALARM_ENABLED_LABEL);
+    if (setIndex == SET_VIBWIN_ENABLED) {
+      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    }
+    display.println(enabled ? PW_YES : PW_NO);
+
+    display.display(true); // partial refresh
+  }
+
+  vibrateWindowFromHour = fromHour;
+  vibrateWindowToHour = toHour;
+  vibrateWindowEnabled = enabled;
+  saveVibrateWindow();
+
+  showTimeMenu(timeMenuIndex, false);
 }
 
 void PicoWatch::playSnake() {
@@ -2354,7 +2635,7 @@ void PicoWatch::setTime() {
 
   RTC.set(tm);
 
-  showSettingsMenu(settingsMenuIndex, false);
+  showTimeMenu(timeMenuIndex, false);
 }
 
 void PicoWatch::setTimezone() {
@@ -2420,7 +2701,7 @@ void PicoWatch::setTimezone() {
     saveManualGmtOffset(offsetSec);
   }
 
-  showSettingsMenu(settingsMenuIndex, false);
+  showTimeMenu(timeMenuIndex, false);
 }
 
 void PicoWatch::setWeatherCity() {
@@ -3346,7 +3627,7 @@ void PicoWatch::showSyncNTP() {
   }
   display.display(true); // full refresh
   delay(3000);
-  showSettingsMenu(settingsMenuIndex, false);
+  showTimeMenu(timeMenuIndex, false);
 }
 
 bool PicoWatch::syncNTP() { // NTP sync - call after connecting to WiFi and
