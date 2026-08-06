@@ -26,4 +26,7 @@
 #warning "Unsupported PICOWATCH_LANG - defaulting to English. Define PW_LANG_EN or PW_LANG_DE."
 #endif
 
+// Adding a new language: see languages/localization_template.h for the full
+// copy-and-translate walkthrough (new PW_LANG_XX macro + #elif branch above).
+
 #endif
