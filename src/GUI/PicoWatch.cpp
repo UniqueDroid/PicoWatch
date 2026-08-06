@@ -3823,18 +3823,39 @@ void PicoWatch::setupWifi() {
       // app's home screen: a minimal stock menu (just "wifi") plus our own
       // buttons injected via setCustomMenuHTML() - the actual mechanism
       // pfsense-status-esp32 uses (buildCustomMenuHtml() there).
-      static std::vector<const char *> kConnectedMenuIds = {"wifi"};
+      //
+      // The actual bug (found 06.08.2026): WiFiManager's handleRoot() only
+      // appends _customMenuHTML when the menu list passed to setMenu()
+      // contains the literal token "custom" (WiFiManager.cpp ~line 1443) -
+      // pfsense-status-esp32's own config_portal.cpp:784 fullMenu[] array
+      // includes it explicitly ({"wifi", "param", "info", "custom",
+      // "restart", "sep"}), but our port only had "wifi", so our whole
+      // Firmware Update section/buttons silently never rendered - visitors
+      // only ever saw WiFiManager's bare stock "Configure WiFi" page.
+      static std::vector<const char *> kConnectedMenuIds = {"custom", "wifi"};
       wifiManager.setMenu(kConnectedMenuIds);
-      String fullMenu = "<div class='msg S'><strong>Connected</strong> to " + String(lastSSID) + "</div>"
-                        "<h3>Firmware Update</h3><hr>"
-                        "<form method='POST' action='/github-update'>"
-                        "<button type='submit'>Check for Online Update</button></form>"
-                        "<hr>"
-                        "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
-                        "<input type='file' name='update' accept='.bin'>"
-                        "<button type='submit'>Upload &amp; Flash (File Update)</button></form>"
-                        "<hr><a href='/change-password'>Change Password</a> &middot; <a href='/logout'>Logout</a>";
-      wifiManager.setCustomMenuHTML(fullMenu.c_str());
+      // setCustomMenuHTML() only stores the raw const char* pointer, not a
+      // copy (WiFiManager.cpp: `_customMenuHTML = html;`) - it's read fresh
+      // on every single HTTP request for as long as the web portal stays
+      // up (up to WIFI_STAY_CONNECTED_TIMEOUT later). A local Arduino
+      // String's backing buffer isn't guaranteed that stable across
+      // everything that runs in between (heap churn from the polling loop
+      // below, other String temporaries elsewhere in this same function,
+      // etc.) - a `static` fixed buffer has no such lifetime question, its
+      // address never changes for as long as the program runs.
+      static char fullMenuBuf[512];
+      snprintf(fullMenuBuf, sizeof(fullMenuBuf),
+               "<div class='msg S'><strong>Connected</strong> to %s</div>"
+               "<h3>Firmware Update</h3><hr>"
+               "<form method='POST' action='/github-update'>"
+               "<button type='submit'>Check for Online Update</button></form>"
+               "<hr>"
+               "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
+               "<input type='file' name='update' accept='.bin'>"
+               "<button type='submit'>Upload &amp; Flash (File Update)</button></form>"
+               "<hr><a href='/change-password'>Change Password</a> &middot; <a href='/logout'>Logout</a>",
+               lastSSID);
+      wifiManager.setCustomMenuHTML(fullMenuBuf);
     }
 
     unsigned long connectedAt = millis();
