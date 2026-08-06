@@ -1,4 +1,5 @@
 #include "PicoWatch.h"
+#include "localization.h"
 #include <Preferences.h>
 #include <mbedtls/sha256.h> // SHA256 verification for GitHub OTA - see PicoWatch::updateFromGithub()
 #include <Fonts/FreeMonoBold12pt7b.h> // "Big" menu font size - see PicoWatch::showFontSizeSettings()
@@ -186,12 +187,12 @@ void generateWifiApPassword() {
 
 const char *watchfaceActionName(uint8_t action) {
   switch (action) {
-  case WATCHFACE_ACTION_SETTINGS: return "Settings";
-  case WATCHFACE_ACTION_CHANGE_WATCHFACE: return "Change Watchface";
-  case WATCHFACE_ACTION_WEATHER: return "Weather";
-  case WATCHFACE_ACTION_STOPWATCH: return "Stopwatch";
-  case WATCHFACE_ACTION_ALARM: return "Alarm";
-  default: return "None";
+  case WATCHFACE_ACTION_SETTINGS: return PW_ACTION_SETTINGS;
+  case WATCHFACE_ACTION_CHANGE_WATCHFACE: return PW_ACTION_CHANGE_WATCHFACE;
+  case WATCHFACE_ACTION_WEATHER: return PW_ACTION_WEATHER;
+  case WATCHFACE_ACTION_STOPWATCH: return PW_ACTION_STOPWATCH;
+  case WATCHFACE_ACTION_ALARM: return PW_ACTION_ALARM;
+  default: return PW_ACTION_NONE;
   }
 }
 
@@ -213,9 +214,9 @@ void saveFontSize() {
 
 const char *fontSizeName(uint8_t size) {
   switch (size) {
-  case UI_FONT_SIZE_SMALL: return "Small";
-  case UI_FONT_SIZE_BIG: return "Big";
-  default: return "Default";
+  case UI_FONT_SIZE_SMALL: return PW_FONT_SIZE_SMALL;
+  case UI_FONT_SIZE_BIG: return PW_FONT_SIZE_BIG;
+  default: return PW_FONT_SIZE_DEFAULT;
   }
 }
 
@@ -287,15 +288,15 @@ void saveWeatherCityID(const char *cityID) {
 // example (https://openweathermap.org/weather-conditions), just labelled
 // text instead of an icon bitmap.
 const char *weatherConditionLabel(int code) {
-  if (code > 801) return "Cloudy";
-  if (code == 801) return "Few Clouds";
-  if (code == 800) return "Clear";
-  if (code >= 700) return "Haze";
-  if (code >= 600) return "Snow";
-  if (code >= 500) return "Rain";
-  if (code >= 300) return "Drizzle";
-  if (code >= 200) return "Storm";
-  return "?";
+  if (code > 801) return PW_WEATHER_COND_CLOUDY;
+  if (code == 801) return PW_WEATHER_COND_FEW_CLOUDS;
+  if (code == 800) return PW_WEATHER_COND_CLEAR;
+  if (code >= 700) return PW_WEATHER_COND_HAZE;
+  if (code >= 600) return PW_WEATHER_COND_SNOW;
+  if (code >= 500) return PW_WEATHER_COND_RAIN;
+  if (code >= 300) return PW_WEATHER_COND_DRIZZLE;
+  if (code >= 200) return PW_WEATHER_COND_STORM;
+  return PW_WEATHER_COND_UNKNOWN;
 }
 
 struct DayForecastEntry {
@@ -734,7 +735,8 @@ void PicoWatch::showMenu(byte menuIndex, bool partialRefresh) {
   uint16_t highlightHeightPad;
   uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
-  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Alarm", "Weather (5 Days)", "Settings"};
+  const char *menuItems[] = {PW_MENU_CHANGE_WATCHFACE, PW_MENU_STOPWATCH, PW_MENU_STEPS,
+                             PW_MENU_ALARM,             PW_MENU_WEATHER,   PW_MENU_SETTINGS};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = rowHeight + (rowHeight * i);
     display.setCursor(0, yPos);
@@ -768,7 +770,8 @@ void PicoWatch::showFastMenu(byte menuIndex) {
   uint16_t highlightHeightPad;
   uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
-  const char *menuItems[] = {"Change Watchface", "Stopwatch", "Steps (7 Days)", "Alarm", "Weather (5 Days)", "Settings"};
+  const char *menuItems[] = {PW_MENU_CHANGE_WATCHFACE, PW_MENU_STOPWATCH, PW_MENU_STEPS,
+                             PW_MENU_ALARM,             PW_MENU_WEATHER,   PW_MENU_SETTINGS};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = rowHeight + (rowHeight * i);
     display.setCursor(0, yPos);
@@ -789,10 +792,11 @@ void PicoWatch::showFastMenu(byte menuIndex) {
 }
 
 namespace {
-const char *const kSettingsMenuItems[] = {"About PicoWatch", "Vibrate Motor", "Show Accelerometer",
-                                           "Set Time",     "Setup WiFi",    /*"Update Firmware",*/
-                                           "Sync NTP",     "Set Timezone", "Set City",
-                                           "Update via GitHub", "Button Settings", "Font Size"};
+const char *const kSettingsMenuItems[] = {
+    PW_SETTINGS_ABOUT,  PW_SETTINGS_VIBRATE, PW_SETTINGS_ACCELEROMETER,
+    PW_SETTINGS_SET_TIME, PW_SETTINGS_SETUP_WIFI, /*"Update Firmware",*/
+    PW_SETTINGS_SYNC_NTP, PW_SETTINGS_SET_TIMEZONE, PW_SETTINGS_SET_CITY,
+    PW_SETTINGS_UPDATE_GITHUB, PW_SETTINGS_BUTTON_SETTINGS, PW_SETTINGS_FONT_SIZE};
 
 // Fitting all SETTINGS_MENU_LENGTH items on screen at once made the rows too
 // cramped to read. Instead this shows a scrolling window (sized by
@@ -961,7 +965,7 @@ void PicoWatch::showStopwatch() {
 
       display.setFont(&FreeMonoBold9pt7b);
       display.setCursor(20, 25);
-      display.println("Stopwatch");
+      display.println(PW_STOPWATCH_TITLE);
 
       const unsigned long hh = totalSeconds / 3600;
       const unsigned long mm = (totalSeconds % 3600) / 60;
@@ -988,10 +992,10 @@ void PicoWatch::showStopwatch() {
 
       display.setFont(&FreeMonoBold9pt7b);
       display.setCursor(20, 160);
-      display.println(running ? "Menu: Stop" : "Menu: Start");
+      display.println(running ? PW_STOPWATCH_MENU_STOP : PW_STOPWATCH_MENU_START);
       if (!running) {
         display.setCursor(20, 185);
-        display.println("Up: Reset");
+        display.println(PW_STOPWATCH_UP_RESET);
       }
       display.display(true); // partial refresh
     }
@@ -1011,11 +1015,9 @@ void PicoWatch::showStepsHistory() {
   display.setTextColor(GxEPD_WHITE);
   display.setFont(&FreeMonoBold9pt7b);
   display.setCursor(20, 30);
-  display.println("Steps - 7 Days");
+  display.println(PW_STEPS_TITLE);
 
-  static constexpr const char *kLabels[kStepsHistoryDays] = {"Yesterday", "2 days ago", "3 days ago",
-                                                              "4 days ago", "5 days ago", "6 days ago",
-                                                              "7 days ago"};
+  static constexpr const char *kLabels[kStepsHistoryDays] = PW_STEPS_DAY_LABELS;
   for (int i = 0; i < kStepsHistoryDays; i++) {
     display.setCursor(5, 55 + i * 20);
     char buf[32];
@@ -1109,7 +1111,7 @@ void PicoWatch::setAlarm() {
     display.setTextColor(GxEPD_WHITE);
     display.setFont(&FreeMonoBold9pt7b);
     display.setCursor(20, 25);
-    display.println("Alarm");
+    display.println(PW_ALARM_TITLE);
 
     display.setCursor(5, 80);
     if (setIndex == SET_ALARM_HOUR) {
@@ -1129,11 +1131,11 @@ void PicoWatch::setAlarm() {
 
     display.setTextColor(GxEPD_WHITE);
     display.setCursor(5, 140);
-    display.print("Enabled: ");
+    display.print(PW_ALARM_ENABLED_LABEL);
     if (setIndex == SET_ALARM_ENABLED) {
       display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
     }
-    display.println(enabled ? "Yes" : "No");
+    display.println(enabled ? PW_YES : PW_NO);
 
     display.display(true); // partial refresh
   }
@@ -1219,12 +1221,13 @@ void PicoWatch::showButtonSettings() {
     display.setTextColor(GxEPD_WHITE);
     display.setFont(&FreeMonoBold9pt7b);
     display.setCursor(10, 20);
-    display.println("Button Settings");
+    display.println(PW_BUTTON_SETTINGS_TITLE);
 
     const char *labels[BUTTON_SETTINGS_FIELD_COUNT] = {
-        "Swap Menu/Back:", "Up (short):", "Up (long):", "Down (short):", "Down (long):"};
+        PW_BUTTON_SETTINGS_SWAP, PW_BUTTON_SETTINGS_UP_SHORT, PW_BUTTON_SETTINGS_UP_LONG,
+        PW_BUTTON_SETTINGS_DOWN_SHORT, PW_BUTTON_SETTINGS_DOWN_LONG};
     const char *values[BUTTON_SETTINGS_FIELD_COUNT] = {
-        swapped ? "Yes" : "No", watchfaceActionName(upShort), watchfaceActionName(upLong),
+        swapped ? PW_YES : PW_NO, watchfaceActionName(upShort), watchfaceActionName(upLong),
         watchfaceActionName(downShort), watchfaceActionName(downLong)};
 
     for (int i = 0; i < BUTTON_SETTINGS_FIELD_COUNT; i++) {
@@ -1300,9 +1303,9 @@ void PicoWatch::showFontSizeSettings() {
     display.setFont(&FreeMonoBold9pt7b);
     display.setTextColor(GxEPD_WHITE);
     display.setCursor(10, 20);
-    display.println("Font Size");
+    display.println(PW_FONT_SIZE_TITLE);
     display.setCursor(10, 40);
-    display.println("(menu + settings)");
+    display.println(PW_FONT_SIZE_SUBTITLE);
 
     display.setFont(size == UI_FONT_SIZE_SMALL     ? nullptr
                      : size == UI_FONT_SIZE_BIG    ? &FreeMonoBold12pt7b
@@ -1340,7 +1343,7 @@ void PicoWatch::showWeatherForecast() {
   display.setTextColor(GxEPD_WHITE);
   display.setFont(&FreeMonoBold9pt7b);
   display.setCursor(20, 30);
-  display.println("Loading...");
+  display.println(PW_WEATHER_LOADING);
   display.display(false); // full refresh
 
   if (connectWiFi()) {
@@ -1412,8 +1415,8 @@ void PicoWatch::showWeatherForecast() {
     }
   } else {
     display.setCursor(5, 60);
-    display.println("Check WiFi and the");
-    display.println("weather API key.");
+    display.println(PW_WEATHER_CHECK_WIFI);
+    display.println(PW_WEATHER_CHECK_API_KEY);
   }
   display.display(false); // full refresh
 
@@ -1433,19 +1436,19 @@ void PicoWatch::showAbout() {
   display.setTextColor(GxEPD_WHITE);
   display.setCursor(0, 20);
 
-  display.print("LibVer: ");
+  display.print(PW_ABOUT_LIBVER);
   display.println(PICOWATCH_LIB_VER);
 
-  display.print("Rev: v");
+  display.print(PW_ABOUT_REV);
   display.println(getBoardRevision());
 
-  display.print("Batt: ");
+  display.print(PW_ABOUT_BATT);
   float voltage = getBatteryVoltage();
   display.print(voltage);
-  display.println("V");
+  display.println(PW_ABOUT_VOLT_UNIT);
 
   #ifndef ARDUINO_ESP32S3_DEV
-  display.print("Uptime: ");
+  display.print(PW_ABOUT_UPTIME);
   RTC.read(currentTime);
   time_t b = makeTime(bootTime);
   time_t c = makeTime(currentTime);
@@ -1453,22 +1456,22 @@ void PicoWatch::showAbout() {
   //int seconds = (totalSeconds % 60);
   int minutes = (totalSeconds % 3600) / 60;
   int hours = (totalSeconds % 86400) / 3600;
-  int days = (totalSeconds % (86400 * 30)) / 86400; 
+  int days = (totalSeconds % (86400 * 30)) / 86400;
   display.print(days);
-  display.print("d");
+  display.print(PW_ABOUT_DAYS);
   display.print(hours);
-  display.print("h");
+  display.print(PW_ABOUT_HOURS);
   display.print(minutes);
-  display.println("m");  
+  display.println(PW_ABOUT_MINUTES);
   #endif
-  
+
   if(WIFI_CONFIGURED){
-    display.print("SSID: ");
+    display.print(PW_ABOUT_SSID);
     display.println(lastSSID);
-    display.print("IP: ");
+    display.print(PW_ABOUT_IP);
     display.println(IPAddress(lastIPAddress).toString());
   }else{
-    display.println("WiFi Not Connected");
+    display.println(PW_ABOUT_WIFI_NOT_CONNECTED);
   }
   display.display(false); // full refresh
 
@@ -1491,7 +1494,7 @@ void PicoWatch::updateFromGithub() {
   display.setFont(&FreeMonoBold9pt7b);
   display.setTextColor(GxEPD_WHITE);
   display.setCursor(0, 30);
-  display.println("Checking GitHub...");
+  display.println(PW_GITHUB_CHECKING);
   display.display(false);
 
   auto showResultAndReturn = [&](const char *line1, const char *line2 = nullptr) {
@@ -1505,7 +1508,7 @@ void PicoWatch::updateFromGithub() {
   };
 
   if (!connectWiFi()) {
-    showResultAndReturn("WiFi not connected.");
+    showResultAndReturn(PW_GITHUB_WIFI_NOT_CONNECTED);
     return;
   }
 
@@ -1521,7 +1524,7 @@ void PicoWatch::updateFromGithub() {
   const int code = https.GET();
   if (code != 200) {
     https.end();
-    showResultAndReturn("No release found", "or network error.");
+    showResultAndReturn(PW_GITHUB_NO_RELEASE, PW_GITHUB_NETWORK_ERROR);
     return;
   }
   const String payload = https.getString();
@@ -1529,7 +1532,7 @@ void PicoWatch::updateFromGithub() {
 
   JSONVar release = JSON.parse(payload);
   if (JSON.typeof(release) == "undefined") {
-    showResultAndReturn("Bad release data.");
+    showResultAndReturn(PW_GITHUB_BAD_DATA);
     return;
   }
 
@@ -1545,8 +1548,8 @@ void PicoWatch::updateFromGithub() {
   if (!newer) {
     display.fillScreen(GxEPD_BLACK);
     display.setCursor(0, 30);
-    display.println("Already on the");
-    display.println("latest version:");
+    display.println(PW_GITHUB_ALREADY_LATEST_1);
+    display.println(PW_GITHUB_ALREADY_LATEST_2);
     display.println(tag);
     display.display(false);
     delay(2500);
@@ -1571,13 +1574,13 @@ void PicoWatch::updateFromGithub() {
   }
 
   if (downloadUrl.length() == 0) {
-    showResultAndReturn("Asset not found", "in latest release.");
+    showResultAndReturn(PW_GITHUB_ASSET_NOT_FOUND, PW_GITHUB_IN_LATEST_RELEASE);
     return;
   }
 
   display.fillScreen(GxEPD_BLACK);
   display.setCursor(0, 30);
-  display.println("Downloading:");
+  display.println(PW_GITHUB_DOWNLOADING);
   display.println(tag);
   display.println(" ");
   display.println("0%");
@@ -1593,14 +1596,14 @@ void PicoWatch::updateFromGithub() {
   const int dlCode = dl.GET();
   if (dlCode != 200) {
     dl.end();
-    showResultAndReturn("Download failed.");
+    showResultAndReturn(PW_GITHUB_DOWNLOAD_FAILED);
     return;
   }
 
   const int total = dl.getSize(); // -1 if unknown
   if (!Update.begin(total > 0 ? total : UPDATE_SIZE_UNKNOWN)) {
     dl.end();
-    showResultAndReturn("Not enough space", "for update.");
+    showResultAndReturn(PW_GITHUB_NOT_ENOUGH_SPACE, PW_GITHUB_FOR_UPDATE);
     return;
   }
 
@@ -1657,19 +1660,19 @@ void PicoWatch::updateFromGithub() {
 
   if (!sizeOk || !digestOk) {
     Update.abort();
-    showResultAndReturn("Update verify", "failed - aborted.");
+    showResultAndReturn(PW_GITHUB_VERIFY_1, PW_GITHUB_VERIFY_2);
     return;
   }
 
   if (!Update.end(true) || Update.hasError()) {
-    showResultAndReturn("Update failed", "while finalizing.");
+    showResultAndReturn(PW_GITHUB_FAILED_1, PW_GITHUB_FAILED_2);
     return;
   }
 
   display.fillScreen(GxEPD_BLACK);
   display.setCursor(0, 30);
-  display.println("Update verified.");
-  display.println("Rebooting...");
+  display.println(PW_GITHUB_VERIFIED);
+  display.println(PW_GITHUB_REBOOTING);
   display.display(false);
   delay(1000);
   ESP.restart();
@@ -1681,7 +1684,7 @@ void PicoWatch::showBuzz() {
   display.setFont(&FreeMonoBold9pt7b);
   display.setTextColor(GxEPD_WHITE);
   display.setCursor(70, 80);
-  display.println("Buzz!");
+  display.println(PW_BUZZ);
   display.display(false); // full refresh
   vibMotor();
   showSettingsMenu(settingsMenuIndex, false);
@@ -2000,7 +2003,7 @@ void PicoWatch::setWeatherCity() {
     display.setTextColor(GxEPD_WHITE);
     display.setFont(&FreeMonoBold9pt7b);
     display.setCursor(10, 25);
-    display.println("Set City ID");
+    display.println(PW_SET_CITY_TITLE);
 
     for (int i = 0; i < kDigitCount; i++) {
       display.setCursor(15 + i * 24, 90);
@@ -2017,11 +2020,11 @@ void PicoWatch::setWeatherCity() {
     // read.
     display.setTextColor(GxEPD_WHITE);
     display.setCursor(5, 135);
-    display.println("Find your city ID at");
+    display.println(PW_SET_CITY_FIND_1);
     display.setCursor(5, 155);
-    display.println("openweathermap.org");
+    display.println("openweathermap.org"); // real URL, not translatable
     display.setCursor(5, 175);
-    display.println("/current#cityid");
+    display.println("/current#cityid"); // real URL path, not translatable
 
     display.display(true); // partial refresh
   }
@@ -2079,7 +2082,7 @@ void PicoWatch::showAccelerometer() {
       display.fillScreen(GxEPD_BLACK);
       display.setCursor(0, 30);
       if (res == false) {
-        display.println("getAccel FAIL");
+        display.println(PW_ACCEL_FAIL);
       } else {
         display.print("  X:");
         display.println(acc.x);
@@ -2091,25 +2094,25 @@ void PicoWatch::showAccelerometer() {
         display.setCursor(30, 130);
         switch (direction) {
         case DIRECTION_DISP_DOWN:
-          display.println("FACE DOWN");
+          display.println(PW_ACCEL_FACE_DOWN);
           break;
         case DIRECTION_DISP_UP:
-          display.println("FACE UP");
+          display.println(PW_ACCEL_FACE_UP);
           break;
         case DIRECTION_BOTTOM_EDGE:
-          display.println("BOTTOM EDGE");
+          display.println(PW_ACCEL_BOTTOM_EDGE);
           break;
         case DIRECTION_TOP_EDGE:
-          display.println("TOP EDGE");
+          display.println(PW_ACCEL_TOP_EDGE);
           break;
         case DIRECTION_RIGHT_EDGE:
-          display.println("RIGHT EDGE");
+          display.println(PW_ACCEL_RIGHT_EDGE);
           break;
         case DIRECTION_LEFT_EDGE:
-          display.println("LEFT EDGE");
+          display.println(PW_ACCEL_LEFT_EDGE);
           break;
         default:
-          display.println("ERROR!!!");
+          display.println(PW_ACCEL_ERROR);
           break;
         }
       }
@@ -2433,7 +2436,7 @@ void PicoWatch::setupWifi() {
   display.setFont(&FreeMonoBold9pt7b);
   display.setTextColor(GxEPD_WHITE);
   display.setCursor(0, 30);
-  display.println("Connecting...");
+  display.println(PW_WIFI_CONNECTING);
   display.display(false);
 
   // This now matches pfsense-status-esp32's ACTUAL control flow, read
@@ -2464,10 +2467,10 @@ void PicoWatch::setupWifi() {
   if (!connected) {
     display.fillScreen(GxEPD_BLACK);
     display.setCursor(0, 20);
-    display.println("Connect phone to:");
+    display.println(PW_WIFI_CONNECT_PHONE_TO);
     display.println(WIFI_AP_SSID);
-    display.println("(password on next");
-    display.println("screen)");
+    display.println(PW_WIFI_PASSWORD_NEXT_1);
+    display.println(PW_WIFI_PASSWORD_NEXT_2);
     display.display(false);
     // Password-protected with a random key (generateWifiApPassword(),
     // called once per true reset) shown on-screen in _configModeCallback -
@@ -2479,15 +2482,15 @@ void PicoWatch::setupWifi() {
   display.fillScreen(GxEPD_BLACK);
   display.setCursor(0, 30);
   if (!connected) { // WiFi setup failed
-    display.println("Setup failed &");
-    display.println("timed out!");
+    display.println(PW_WIFI_SETUP_FAILED);
+    display.println(PW_WIFI_TIMED_OUT);
   } else {
-    display.println("Connected to:");
+    display.println(PW_WIFI_CONNECTED_TO);
     display.println(WiFi.SSID());
-    display.println("Open in browser:");
+    display.println(PW_WIFI_OPEN_IN_BROWSER);
     display.println(WiFi.localIP());
     display.println(" ");
-    display.println("Back to disconnect");
+    display.println(PW_WIFI_BACK_TO_DISCONNECT);
     weatherIntervalCounter = -1; // Reset to force weather to be read again
     lastIPAddress = WiFi.localIP();
     WiFi.SSID().toCharArray(lastSSID, 30);
@@ -2619,8 +2622,8 @@ void PicoWatch::setupWifi() {
               if (!uploadAuthorized) return;
               display.fillScreen(GxEPD_BLACK);
               display.setCursor(0, 30);
-              display.println("Receiving update");
-              display.println("via File Update...");
+              display.println(PW_WIFI_RECEIVING_UPDATE_1);
+              display.println(PW_WIFI_RECEIVING_UPDATE_2);
               display.display(false);
               Update.begin(UPDATE_SIZE_UNKNOWN);
             } else if (upload.status == UPLOAD_FILE_WRITE) {
@@ -2674,12 +2677,12 @@ void PicoWatch::_configModeCallback(WiFiManager *myWiFiManager) {
   display.setFont(&FreeMonoBold9pt7b);
   display.setTextColor(GxEPD_WHITE);
   display.setCursor(0, 30);
-  display.println("Connect to");
-  display.print("SSID: ");
+  display.println(PW_WIFI_AP_CONNECT_TO);
+  display.print(PW_WIFI_AP_SSID_LABEL);
   display.println(WIFI_AP_SSID);
-  display.print("Pass: ");
+  display.print(PW_WIFI_AP_PASS_LABEL);
   display.println(wifiApPassword);
-  display.print("IP: ");
+  display.print(PW_WIFI_AP_IP_LABEL);
   display.println(WiFi.softAPIP());
   display.display(false); // full refresh
 }
@@ -2817,14 +2820,14 @@ void PicoWatch::showSyncNTP() {
   display.setFont(&FreeMonoBold9pt7b);
   display.setTextColor(GxEPD_WHITE);
   display.setCursor(0, 30);
-  display.println("Syncing NTP... ");
-  display.print("GMT offset: ");
+  display.println(PW_NTP_SYNCING);
+  display.print(PW_NTP_GMT_OFFSET);
   display.println(gmtOffset);
   display.display(false); // full refresh
   if (connectWiFi()) {
     if (syncNTP()) {
-      display.println("NTP Sync Success\n");
-      display.println("Current Time Is:");
+      display.println(PW_NTP_SUCCESS);
+      display.println(PW_NTP_CURRENT_TIME);
 
       RTC.read(currentTime);
 
@@ -2845,12 +2848,12 @@ void PicoWatch::showSyncNTP() {
       }
       display.println(currentTime.Minute);
     } else {
-      display.println("NTP Sync Failed");
+      display.println(PW_NTP_FAILED);
     }
     WiFi.mode(WIFI_OFF);
     btStop();
   } else {
-    display.println("WiFi Not Configured");
+    display.println(PW_NTP_WIFI_NOT_CONFIGURED);
   }
   display.display(true); // full refresh
   delay(3000);
