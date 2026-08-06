@@ -1,171 +1,178 @@
 #ifndef PICOWATCH_LOCALIZATION_TEMPLATE_H
 #define PICOWATCH_LOCALIZATION_TEMPLATE_H
 
+#include "../localization_ids.h"
+
 // TEMPLATE FOR A NEW LANGUAGE - see ../localization.h
 //
-// To add a language (e.g. French):
+// PicoWatch's UI language is chosen at RUNTIME (Settings -> Language), not
+// compile-time - every string lives in a per-language table indexed by the
+// PW_STR_* enum in ../localization_ids.h, and localization.cpp holds a
+// small table-of-tables picking the active one. To add a language (e.g.
+// French):
 // 1. Copy this file to localization_fr.h in this same folder.
-// 2. Translate every string on the right-hand side of each #define below
-//    (leave the macro names and the {"...", ...} array shapes untouched).
-// 3. Keep it ASCII-only - the bundled Adafruit GFX fonts (FreeMonoBold9pt7b
+// 2. Rename kLocalizedStrings_xx/kLocalizedDayLabels_xx to
+//    kLocalizedStrings_fr/kLocalizedDayLabels_fr.
+// 3. Translate every string (right-hand side only, keep the PW_STR_* order
+//    and the trailing "// PW_STR_XXX" comments as a sanity check while
+//    translating - a table shorter/longer than PW_STR_COUNT fails to
+//    compile, but a same-length table with two rows swapped compiles fine
+//    and silently shows the wrong label, so double-check the order).
+// 4. Keep it ASCII-only - the bundled Adafruit GFX fonts (FreeMonoBold9pt7b
 //    etc.) only cover printable ASCII (0x20-0x7E), so accented characters
 //    (e.g. e-acute, c-cedilla) render as garbage/missing glyphs on-device.
 //    Spell them out ASCII-style instead (see localization_de.h's ae/oe/ue/ss
 //    convention for German as an example).
-// 4. In ../localization.h: add "#define PW_LANG_FR 3" (next free number)
-//    and an "#elif PICOWATCH_LANG == PW_LANG_FR / #include
-//    "languages/localization_fr.h"" branch next to the existing DE/EN ones.
-// 5. Build with -DPICOWATCH_LANG=PW_LANG_FR (or set it as the default in
-//    localization.h) to compile with the new language.
+// 5. In ../localization.h: add "#define PW_LANG_FR 2" (next free number
+//    after PW_LANG_DE) and bump PW_LANG_COUNT.
+// 6. In ../localization.cpp: #include "languages/localization_fr.h", add
+//    kLocalizedStrings_fr/kLocalizedDayLabels_fr to kStringTables/
+//    kDayLabelTables at the PW_LANG_FR index, and add "Francais" (its own
+//    name, never translated - see pwLanguageName()) to kLanguageNames at
+//    the same index.
+// 7. Rebuild - the new language now appears in the Settings -> Language
+//    picker (PicoWatch::showLanguageSettings() cycles 0..PW_LANG_COUNT-1).
 
-// Top-level menu (PicoWatch::showMenu()/showFastMenu())
-#define PW_MENU_CHANGE_WATCHFACE "Change Watchface"
-#define PW_MENU_STOPWATCH "Stopwatch"
-#define PW_MENU_STEPS "Steps (7 Days)"
-#define PW_MENU_ALARM "Alarm"
-#define PW_MENU_WEATHER "Weather (5 Days)"
-#define PW_MENU_SETTINGS "Settings"
+const char *const kLocalizedStrings_xx[PW_STR_COUNT] = {
+  // Top-level menu (PicoWatch::showMenu()/showFastMenu())
+  "Change Watchface",  // PW_MENU_CHANGE_WATCHFACE
+  "Stopwatch",  // PW_MENU_STOPWATCH
+  "Steps (7 Days)",  // PW_MENU_STEPS
+  "Alarm",  // PW_MENU_ALARM
+  "Weather (5 Days)",  // PW_MENU_WEATHER
+  "Settings",  // PW_MENU_SETTINGS
+  // Settings menu (PicoWatch::showSettingsMenu()/showFastSettingsMenu())
+  "About PicoWatch",  // PW_SETTINGS_ABOUT
+  "Vibrate Motor",  // PW_SETTINGS_VIBRATE
+  "Show Accelerometer",  // PW_SETTINGS_ACCELEROMETER
+  "Set Time",  // PW_SETTINGS_SET_TIME
+  "WiFi",  // PW_SETTINGS_SETUP_WIFI
+  "Sync NTP",  // PW_SETTINGS_SYNC_NTP
+  "Set Timezone",  // PW_SETTINGS_SET_TIMEZONE
+  "Set City",  // PW_SETTINGS_SET_CITY
+  "Update via GitHub",  // PW_SETTINGS_UPDATE_GITHUB
+  "Button Settings",  // PW_SETTINGS_BUTTON_SETTINGS
+  "Font Size",  // PW_SETTINGS_FONT_SIZE
+  "Language",  // PW_SETTINGS_LANGUAGE
+  // Stopwatch (PicoWatch::showStopwatch())
+  "Stopwatch",  // PW_STOPWATCH_TITLE
+  "Up: Reset",  // PW_STOPWATCH_UP_RESET
+  "Menu: Stop",  // PW_STOPWATCH_MENU_STOP
+  "Menu: Start",  // PW_STOPWATCH_MENU_START
+  // Steps (PicoWatch::showStepsHistory())
+  "Steps - 7 Days",  // PW_STEPS_TITLE
+  // Alarm (PicoWatch::setAlarm())
+  "Alarm",  // PW_ALARM_TITLE
+  "Enabled: ",  // PW_ALARM_ENABLED_LABEL
+  "Yes",  // PW_YES
+  "No",  // PW_NO
+  // Button Settings (PicoWatch::showButtonSettings())
+  "Button Settings",  // PW_BUTTON_SETTINGS_TITLE
+  "Swap Menu/Back:",  // PW_BUTTON_SETTINGS_SWAP
+  "Up (short):",  // PW_BUTTON_SETTINGS_UP_SHORT
+  "Up (long):",  // PW_BUTTON_SETTINGS_UP_LONG
+  "Down (short):",  // PW_BUTTON_SETTINGS_DOWN_SHORT
+  "Down (long):",  // PW_BUTTON_SETTINGS_DOWN_LONG
+  // watchfaceActionName()
+  "None",  // PW_ACTION_NONE
+  "Settings",  // PW_ACTION_SETTINGS
+  "Change Watchface",  // PW_ACTION_CHANGE_WATCHFACE
+  "Weather",  // PW_ACTION_WEATHER
+  "Stopwatch",  // PW_ACTION_STOPWATCH
+  "Alarm",  // PW_ACTION_ALARM
+  // Font Size (PicoWatch::showFontSizeSettings())
+  "Font Size",  // PW_FONT_SIZE_TITLE
+  "(menu + settings)",  // PW_FONT_SIZE_SUBTITLE
+  "Small",  // PW_FONT_SIZE_SMALL
+  "Default",  // PW_FONT_SIZE_DEFAULT
+  "Big",  // PW_FONT_SIZE_BIG
+  // Weather forecast (PicoWatch::showWeatherForecast())
+  "Loading...",  // PW_WEATHER_LOADING
+  "Check WiFi and the",  // PW_WEATHER_CHECK_WIFI
+  "weather API key.",  // PW_WEATHER_CHECK_API_KEY
+  // weatherConditionLabel()
+  "Cloudy",  // PW_WEATHER_COND_CLOUDY
+  "Few Clouds",  // PW_WEATHER_COND_FEW_CLOUDS
+  "Clear",  // PW_WEATHER_COND_CLEAR
+  "Haze",  // PW_WEATHER_COND_HAZE
+  "Snow",  // PW_WEATHER_COND_SNOW
+  "Rain",  // PW_WEATHER_COND_RAIN
+  "Drizzle",  // PW_WEATHER_COND_DRIZZLE
+  "Storm",  // PW_WEATHER_COND_STORM
+  "?",  // PW_WEATHER_COND_UNKNOWN
+  // About (PicoWatch::showAbout())
+  "LibVer: ",  // PW_ABOUT_LIBVER
+  "Rev: v",  // PW_ABOUT_REV
+  "Batt: ",  // PW_ABOUT_BATT
+  "V",  // PW_ABOUT_VOLT_UNIT
+  "Uptime: ",  // PW_ABOUT_UPTIME
+  "d",  // PW_ABOUT_DAYS
+  "h",  // PW_ABOUT_HOURS
+  "m",  // PW_ABOUT_MINUTES
+  "SSID: ",  // PW_ABOUT_SSID
+  "IP: ",  // PW_ABOUT_IP
+  "WiFi Not Connected",  // PW_ABOUT_WIFI_NOT_CONNECTED
+  // GitHub Update (PicoWatch::updateFromGithub())
+  "Checking GitHub...",  // PW_GITHUB_CHECKING
+  "WiFi not connected.",  // PW_GITHUB_WIFI_NOT_CONNECTED
+  "No release found",  // PW_GITHUB_NO_RELEASE
+  "or network error.",  // PW_GITHUB_NETWORK_ERROR
+  "Bad release data.",  // PW_GITHUB_BAD_DATA
+  "Already on the",  // PW_GITHUB_ALREADY_LATEST_1
+  "latest version:",  // PW_GITHUB_ALREADY_LATEST_2
+  "Asset not found",  // PW_GITHUB_ASSET_NOT_FOUND
+  "in latest release.",  // PW_GITHUB_IN_LATEST_RELEASE
+  "Downloading:",  // PW_GITHUB_DOWNLOADING
+  "Download failed.",  // PW_GITHUB_DOWNLOAD_FAILED
+  "Not enough space",  // PW_GITHUB_NOT_ENOUGH_SPACE
+  "for update.",  // PW_GITHUB_FOR_UPDATE
+  "Update verify",  // PW_GITHUB_VERIFY_1
+  "failed - aborted.",  // PW_GITHUB_VERIFY_2
+  "Update failed",  // PW_GITHUB_FAILED_1
+  "while finalizing.",  // PW_GITHUB_FAILED_2
+  "Update verified.",  // PW_GITHUB_VERIFIED
+  "Rebooting...",  // PW_GITHUB_REBOOTING
+  // Buzz (PicoWatch::showBuzz())
+  "Buzz!",  // PW_BUZZ
+  // Set City (PicoWatch::setWeatherCity())
+  "Set City ID",  // PW_SET_CITY_TITLE
+  "Find your city ID at",  // PW_SET_CITY_FIND_1
+  // Accelerometer debug (PicoWatch::showAccelerometer())
+  "getAccel FAIL",  // PW_ACCEL_FAIL
+  "FACE DOWN",  // PW_ACCEL_FACE_DOWN
+  "FACE UP",  // PW_ACCEL_FACE_UP
+  "BOTTOM EDGE",  // PW_ACCEL_BOTTOM_EDGE
+  "TOP EDGE",  // PW_ACCEL_TOP_EDGE
+  "RIGHT EDGE",  // PW_ACCEL_RIGHT_EDGE
+  "LEFT EDGE",  // PW_ACCEL_LEFT_EDGE
+  "ERROR!!!",  // PW_ACCEL_ERROR
+  // WiFi setup (PicoWatch::setupWifi()/_configModeCallback())
+  "Connecting...",  // PW_WIFI_CONNECTING
+  "Connect phone to:",  // PW_WIFI_CONNECT_PHONE_TO
+  "(password on next",  // PW_WIFI_PASSWORD_NEXT_1
+  "screen)",  // PW_WIFI_PASSWORD_NEXT_2
+  "Setup failed &",  // PW_WIFI_SETUP_FAILED
+  "timed out!",  // PW_WIFI_TIMED_OUT
+  "Connected to:",  // PW_WIFI_CONNECTED_TO
+  "Open in browser:",  // PW_WIFI_OPEN_IN_BROWSER
+  "Back to disconnect",  // PW_WIFI_BACK_TO_DISCONNECT
+  "Receiving update",  // PW_WIFI_RECEIVING_UPDATE_1
+  "via File Update...",  // PW_WIFI_RECEIVING_UPDATE_2
+  "Connect to",  // PW_WIFI_AP_CONNECT_TO
+  "SSID: ",  // PW_WIFI_AP_SSID_LABEL
+  "Pass: ",  // PW_WIFI_AP_PASS_LABEL
+  "IP: ",  // PW_WIFI_AP_IP_LABEL
+  // Sync NTP (PicoWatch::showSyncNTP())
+  "Syncing NTP... ",  // PW_NTP_SYNCING
+  "GMT offset: ",  // PW_NTP_GMT_OFFSET
+  "NTP Sync Success\n",  // PW_NTP_SUCCESS
+  "Current Time Is:",  // PW_NTP_CURRENT_TIME
+  "NTP Sync Failed",  // PW_NTP_FAILED
+  "WiFi Not Configured",  // PW_NTP_WIFI_NOT_CONFIGURED
+};
 
-// Settings menu (PicoWatch::showSettingsMenu()/showFastSettingsMenu())
-#define PW_SETTINGS_ABOUT "About PicoWatch"
-#define PW_SETTINGS_VIBRATE "Vibrate Motor"
-#define PW_SETTINGS_ACCELEROMETER "Show Accelerometer"
-#define PW_SETTINGS_SET_TIME "Set Time"
-#define PW_SETTINGS_SETUP_WIFI "Setup WiFi"
-#define PW_SETTINGS_SYNC_NTP "Sync NTP"
-#define PW_SETTINGS_SET_TIMEZONE "Set Timezone"
-#define PW_SETTINGS_SET_CITY "Set City"
-#define PW_SETTINGS_UPDATE_GITHUB "Update via GitHub"
-#define PW_SETTINGS_BUTTON_SETTINGS "Button Settings"
-#define PW_SETTINGS_FONT_SIZE "Font Size"
-
-// Stopwatch (PicoWatch::showStopwatch())
-#define PW_STOPWATCH_TITLE "Stopwatch"
-#define PW_STOPWATCH_UP_RESET "Up: Reset"
-#define PW_STOPWATCH_MENU_STOP "Menu: Stop"
-#define PW_STOPWATCH_MENU_START "Menu: Start"
-
-// Steps (PicoWatch::showStepsHistory())
-#define PW_STEPS_TITLE "Steps - 7 Days"
-#define PW_STEPS_DAY_LABELS {"Yesterday", "2 days ago", "3 days ago", "4 days ago", "5 days ago", "6 days ago", "7 days ago"}
-
-// Alarm (PicoWatch::setAlarm())
-#define PW_ALARM_TITLE "Alarm"
-#define PW_ALARM_ENABLED_LABEL "Enabled: "
-#define PW_YES "Yes"
-#define PW_NO "No"
-
-// Button Settings (PicoWatch::showButtonSettings())
-#define PW_BUTTON_SETTINGS_TITLE "Button Settings"
-#define PW_BUTTON_SETTINGS_SWAP "Swap Menu/Back:"
-#define PW_BUTTON_SETTINGS_UP_SHORT "Up (short):"
-#define PW_BUTTON_SETTINGS_UP_LONG "Up (long):"
-#define PW_BUTTON_SETTINGS_DOWN_SHORT "Down (short):"
-#define PW_BUTTON_SETTINGS_DOWN_LONG "Down (long):"
-// watchfaceActionName()
-#define PW_ACTION_NONE "None"
-#define PW_ACTION_SETTINGS "Settings"
-#define PW_ACTION_CHANGE_WATCHFACE "Change Watchface"
-#define PW_ACTION_WEATHER "Weather"
-#define PW_ACTION_STOPWATCH "Stopwatch"
-#define PW_ACTION_ALARM "Alarm"
-
-// Font Size (PicoWatch::showFontSizeSettings())
-#define PW_FONT_SIZE_TITLE "Font Size"
-#define PW_FONT_SIZE_SUBTITLE "(menu + settings)"
-#define PW_FONT_SIZE_SMALL "Small"
-#define PW_FONT_SIZE_DEFAULT "Default"
-#define PW_FONT_SIZE_BIG "Big"
-
-// Weather forecast (PicoWatch::showWeatherForecast())
-#define PW_WEATHER_LOADING "Loading..."
-#define PW_WEATHER_CHECK_WIFI "Check WiFi and the"
-#define PW_WEATHER_CHECK_API_KEY "weather API key."
-// weatherConditionLabel()
-#define PW_WEATHER_COND_CLOUDY "Cloudy"
-#define PW_WEATHER_COND_FEW_CLOUDS "Few Clouds"
-#define PW_WEATHER_COND_CLEAR "Clear"
-#define PW_WEATHER_COND_HAZE "Haze"
-#define PW_WEATHER_COND_SNOW "Snow"
-#define PW_WEATHER_COND_RAIN "Rain"
-#define PW_WEATHER_COND_DRIZZLE "Drizzle"
-#define PW_WEATHER_COND_STORM "Storm"
-#define PW_WEATHER_COND_UNKNOWN "?"
-
-// About (PicoWatch::showAbout())
-#define PW_ABOUT_LIBVER "LibVer: "
-#define PW_ABOUT_REV "Rev: v"
-#define PW_ABOUT_BATT "Batt: "
-#define PW_ABOUT_VOLT_UNIT "V"
-#define PW_ABOUT_UPTIME "Uptime: "
-#define PW_ABOUT_DAYS "d"
-#define PW_ABOUT_HOURS "h"
-#define PW_ABOUT_MINUTES "m"
-#define PW_ABOUT_SSID "SSID: "
-#define PW_ABOUT_IP "IP: "
-#define PW_ABOUT_WIFI_NOT_CONNECTED "WiFi Not Connected"
-
-// GitHub Update (PicoWatch::updateFromGithub())
-#define PW_GITHUB_CHECKING "Checking GitHub..."
-#define PW_GITHUB_WIFI_NOT_CONNECTED "WiFi not connected."
-#define PW_GITHUB_NO_RELEASE "No release found"
-#define PW_GITHUB_NETWORK_ERROR "or network error."
-#define PW_GITHUB_BAD_DATA "Bad release data."
-#define PW_GITHUB_ALREADY_LATEST_1 "Already on the"
-#define PW_GITHUB_ALREADY_LATEST_2 "latest version:"
-#define PW_GITHUB_ASSET_NOT_FOUND "Asset not found"
-#define PW_GITHUB_IN_LATEST_RELEASE "in latest release."
-#define PW_GITHUB_DOWNLOADING "Downloading:"
-#define PW_GITHUB_DOWNLOAD_FAILED "Download failed."
-#define PW_GITHUB_NOT_ENOUGH_SPACE "Not enough space"
-#define PW_GITHUB_FOR_UPDATE "for update."
-#define PW_GITHUB_VERIFY_1 "Update verify"
-#define PW_GITHUB_VERIFY_2 "failed - aborted."
-#define PW_GITHUB_FAILED_1 "Update failed"
-#define PW_GITHUB_FAILED_2 "while finalizing."
-#define PW_GITHUB_VERIFIED "Update verified."
-#define PW_GITHUB_REBOOTING "Rebooting..."
-
-// Buzz (PicoWatch::showBuzz())
-#define PW_BUZZ "Buzz!"
-
-// Set City (PicoWatch::setWeatherCity())
-#define PW_SET_CITY_TITLE "Set City ID"
-#define PW_SET_CITY_FIND_1 "Find your city ID at"
-
-// Accelerometer debug (PicoWatch::showAccelerometer())
-#define PW_ACCEL_FAIL "getAccel FAIL"
-#define PW_ACCEL_FACE_DOWN "FACE DOWN"
-#define PW_ACCEL_FACE_UP "FACE UP"
-#define PW_ACCEL_BOTTOM_EDGE "BOTTOM EDGE"
-#define PW_ACCEL_TOP_EDGE "TOP EDGE"
-#define PW_ACCEL_RIGHT_EDGE "RIGHT EDGE"
-#define PW_ACCEL_LEFT_EDGE "LEFT EDGE"
-#define PW_ACCEL_ERROR "ERROR!!!"
-
-// WiFi setup (PicoWatch::setupWifi()/_configModeCallback())
-#define PW_WIFI_CONNECTING "Connecting..."
-#define PW_WIFI_CONNECT_PHONE_TO "Connect phone to:"
-#define PW_WIFI_PASSWORD_NEXT_1 "(password on next"
-#define PW_WIFI_PASSWORD_NEXT_2 "screen)"
-#define PW_WIFI_SETUP_FAILED "Setup failed &"
-#define PW_WIFI_TIMED_OUT "timed out!"
-#define PW_WIFI_CONNECTED_TO "Connected to:"
-#define PW_WIFI_OPEN_IN_BROWSER "Open in browser:"
-#define PW_WIFI_BACK_TO_DISCONNECT "Back to disconnect"
-#define PW_WIFI_RECEIVING_UPDATE_1 "Receiving update"
-#define PW_WIFI_RECEIVING_UPDATE_2 "via File Update..."
-#define PW_WIFI_AP_CONNECT_TO "Connect to"
-#define PW_WIFI_AP_SSID_LABEL "SSID: "
-#define PW_WIFI_AP_PASS_LABEL "Pass: "
-#define PW_WIFI_AP_IP_LABEL "IP: "
-
-// Sync NTP (PicoWatch::showSyncNTP())
-#define PW_NTP_SYNCING "Syncing NTP... "
-#define PW_NTP_GMT_OFFSET "GMT offset: "
-#define PW_NTP_SUCCESS "NTP Sync Success\n"
-#define PW_NTP_CURRENT_TIME "Current Time Is:"
-#define PW_NTP_FAILED "NTP Sync Failed"
-#define PW_NTP_WIFI_NOT_CONFIGURED "WiFi Not Configured"
+// 7-day steps history labels (separate from the table above since it's an
+// array-of-strings, not a single string) - see PicoWatch::showStepsHistory().
+const char *const kLocalizedDayLabels_xx[7] = {"Yesterday", "2 days ago", "3 days ago", "4 days ago", "5 days ago", "6 days ago", "7 days ago"};
 
 #endif

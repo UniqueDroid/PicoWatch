@@ -121,6 +121,9 @@ public:
   // Small/Default/Big font size for the top-level menu and Settings list
   // (see config.h UI_FONT_SIZE_*). Persisted in flash (NVS).
   void showFontSizeSettings();
+  // English/Deutsch UI language picker (see localization.h). Persisted in
+  // flash (NVS), reloaded in init()'s reset path like the other settings.
+  void showLanguageSettings();
   weatherData getWeatherData();
   void updateFWBegin();
 

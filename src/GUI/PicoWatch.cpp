@@ -1,5 +1,6 @@
 #include "PicoWatch.h"
 #include "localization.h"
+#include "MenuIcons.h"
 #include <Preferences.h>
 #include <mbedtls/sha256.h> // SHA256 verification for GitHub OTA - see PicoWatch::updateFromGithub()
 #include <Fonts/FreeMonoBold12pt7b.h> // "Big" menu font size - see PicoWatch::showFontSizeSettings()
@@ -212,6 +213,22 @@ void saveFontSize() {
   prefs.end();
 }
 
+constexpr const char *kPrefsLanguageKey = "uiLang";
+
+void loadLanguage() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  picowatchLanguage = prefs.getUChar(kPrefsLanguageKey, PICOWATCH_LANG);
+  prefs.end();
+}
+
+void saveLanguage() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putUChar(kPrefsLanguageKey, picowatchLanguage);
+  prefs.end();
+}
+
 const char *fontSizeName(uint8_t size) {
   switch (size) {
   case UI_FONT_SIZE_SMALL: return PW_FONT_SIZE_SMALL;
@@ -253,6 +270,11 @@ int uiSettingsVisibleRows() {
   const int rows = DISPLAY_HEIGHT / uiMenuRowHeight();
   return min(rows, (int)SETTINGS_MENU_LENGTH);
 }
+
+// Fixed regardless of font size - the icon itself stays 12x12 at every
+// size, only the surrounding row height/font changes.
+constexpr int16_t kMenuIconX = 2;
+constexpr int16_t kMenuIconTextX = 18;
 
 void uiMenuHighlightPadding(int16_t &yOffset, uint16_t &heightPad) {
   switch (uiFontSize) {
@@ -404,6 +426,7 @@ void PicoWatch::init(String datetime) {
     loadWeatherCityID(settings.cityID);
     loadButtonSettings();
     loadFontSize();
+    loadLanguage();
     generateWifiApPassword();
     RTC.read(currentTime);
     RTC.read(bootTime);
@@ -519,6 +542,9 @@ void dispatchSettingsMenu(PicoWatch *w, int index) {
     break;
   case 10:
     w->showFontSizeSettings();
+    break;
+  case 11:
+    w->showLanguageSettings();
     break;
   default:
     break;
@@ -737,18 +763,23 @@ void PicoWatch::showMenu(byte menuIndex, bool partialRefresh) {
 
   const char *menuItems[] = {PW_MENU_CHANGE_WATCHFACE, PW_MENU_STOPWATCH, PW_MENU_STEPS,
                              PW_MENU_ALARM,             PW_MENU_WEATHER,   PW_MENU_SETTINGS};
+  const uint8_t *const menuIcons[] = {iconWatchface, iconStopwatch, iconSteps,
+                                      iconAlarm,      iconWeather,   iconSettings};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = rowHeight + (rowHeight * i);
-    display.setCursor(0, yPos);
+    display.setCursor(kMenuIconTextX, yPos);
+    display.getTextBounds(menuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
+    uint16_t color;
     if (i == menuIndex) {
-      display.getTextBounds(menuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 + highlightYOffset, 200, h + highlightHeightPad, GxEPD_WHITE);
-      display.setTextColor(GxEPD_BLACK);
-      display.println(menuItems[i]);
+      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
+      color = GxEPD_BLACK;
     } else {
-      display.setTextColor(GxEPD_WHITE);
-      display.println(menuItems[i]);
+      color = GxEPD_WHITE;
     }
+    display.setTextColor(color);
+    display.println(menuItems[i]);
+    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, menuIcons[i],
+                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
   }
 
   display.display(partialRefresh);
@@ -772,18 +803,23 @@ void PicoWatch::showFastMenu(byte menuIndex) {
 
   const char *menuItems[] = {PW_MENU_CHANGE_WATCHFACE, PW_MENU_STOPWATCH, PW_MENU_STEPS,
                              PW_MENU_ALARM,             PW_MENU_WEATHER,   PW_MENU_SETTINGS};
+  const uint8_t *const menuIcons[] = {iconWatchface, iconStopwatch, iconSteps,
+                                      iconAlarm,      iconWeather,   iconSettings};
   for (int i = 0; i < MENU_LENGTH; i++) {
     yPos = rowHeight + (rowHeight * i);
-    display.setCursor(0, yPos);
+    display.setCursor(kMenuIconTextX, yPos);
+    display.getTextBounds(menuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
+    uint16_t color;
     if (i == menuIndex) {
-      display.getTextBounds(menuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 + highlightYOffset, 200, h + highlightHeightPad, GxEPD_WHITE);
-      display.setTextColor(GxEPD_BLACK);
-      display.println(menuItems[i]);
+      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
+      color = GxEPD_BLACK;
     } else {
-      display.setTextColor(GxEPD_WHITE);
-      display.println(menuItems[i]);
+      color = GxEPD_WHITE;
     }
+    display.setTextColor(color);
+    display.println(menuItems[i]);
+    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, menuIcons[i],
+                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
   }
 
   display.display(true);
@@ -796,7 +832,13 @@ const char *const kSettingsMenuItems[] = {
     PW_SETTINGS_ABOUT,  PW_SETTINGS_VIBRATE, PW_SETTINGS_ACCELEROMETER,
     PW_SETTINGS_SET_TIME, PW_SETTINGS_SETUP_WIFI, /*"Update Firmware",*/
     PW_SETTINGS_SYNC_NTP, PW_SETTINGS_SET_TIMEZONE, PW_SETTINGS_SET_CITY,
-    PW_SETTINGS_UPDATE_GITHUB, PW_SETTINGS_BUTTON_SETTINGS, PW_SETTINGS_FONT_SIZE};
+    PW_SETTINGS_UPDATE_GITHUB, PW_SETTINGS_BUTTON_SETTINGS, PW_SETTINGS_FONT_SIZE,
+    PW_SETTINGS_LANGUAGE};
+const uint8_t *const kSettingsMenuIcons[] = {
+    iconAbout,  iconVibrate, iconAccel,
+    iconTime,   iconWifi,
+    iconSync,   iconTimezone, iconCity,
+    iconUpdate, iconButtons, iconFontSize, iconLanguage};
 
 // Fitting all SETTINGS_MENU_LENGTH items on screen at once made the rows too
 // cramped to read. Instead this shows a scrolling window (sized by
@@ -834,16 +876,19 @@ void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
   for (int row = 0; row < visibleCount; row++) {
     const int i = scrollOffset + row;
     yPos = rowHeight + (rowHeight * row);
-    display.setCursor(0, yPos);
+    display.setCursor(kMenuIconTextX, yPos);
+    display.getTextBounds(kSettingsMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
+    uint16_t color;
     if (i == settingsMenuIndex) {
-      display.getTextBounds(kSettingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 + highlightYOffset, 200, h + highlightHeightPad, GxEPD_WHITE);
-      display.setTextColor(GxEPD_BLACK);
-      display.println(kSettingsMenuItems[i]);
+      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
+      color = GxEPD_BLACK;
     } else {
-      display.setTextColor(GxEPD_WHITE);
-      display.println(kSettingsMenuItems[i]);
+      color = GxEPD_WHITE;
     }
+    display.setTextColor(color);
+    display.println(kSettingsMenuItems[i]);
+    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kSettingsMenuIcons[i],
+                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
   }
 
   display.display(partialRefresh);
@@ -871,16 +916,19 @@ void PicoWatch::showFastSettingsMenu(byte settingsMenuIndex) {
   for (int row = 0; row < visibleCount; row++) {
     const int i = scrollOffset + row;
     yPos = rowHeight + (rowHeight * row);
-    display.setCursor(0, yPos);
+    display.setCursor(kMenuIconTextX, yPos);
+    display.getTextBounds(kSettingsMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
+    uint16_t color;
     if (i == settingsMenuIndex) {
-      display.getTextBounds(kSettingsMenuItems[i], 0, yPos, &x1, &y1, &w, &h);
-      display.fillRect(x1 - 1, y1 + highlightYOffset, 200, h + highlightHeightPad, GxEPD_WHITE);
-      display.setTextColor(GxEPD_BLACK);
-      display.println(kSettingsMenuItems[i]);
+      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
+      color = GxEPD_BLACK;
     } else {
-      display.setTextColor(GxEPD_WHITE);
-      display.println(kSettingsMenuItems[i]);
+      color = GxEPD_WHITE;
     }
+    display.setTextColor(color);
+    display.println(kSettingsMenuItems[i]);
+    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kSettingsMenuIcons[i],
+                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
   }
 
   display.display(true);
@@ -1017,11 +1065,11 @@ void PicoWatch::showStepsHistory() {
   display.setCursor(20, 30);
   display.println(PW_STEPS_TITLE);
 
-  static constexpr const char *kLabels[kStepsHistoryDays] = PW_STEPS_DAY_LABELS;
+  const char *const *labels = pwDayLabels();
   for (int i = 0; i < kStepsHistoryDays; i++) {
     display.setCursor(5, 55 + i * 20);
     char buf[32];
-    snprintf(buf, sizeof(buf), "%-11s %6ld", kLabels[i], (long)history[i]);
+    snprintf(buf, sizeof(buf), "%-11s %6ld", labels[i], (long)history[i]);
     display.println(buf);
   }
   display.display(false); // full refresh
@@ -1325,6 +1373,75 @@ void PicoWatch::showFontSizeSettings() {
   if (confirmed && !cancelled) {
     uiFontSize = size;
     saveFontSize();
+  }
+
+  showSettingsMenu(settingsMenuIndex, false);
+}
+
+void PicoWatch::showLanguageSettings() {
+  guiState = APP_STATE;
+
+  uint8_t language = picowatchLanguage;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  bool cancelled = false;
+  bool confirmed = false;
+  while (!confirmed) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      confirmed = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      cancelled = true;
+      break;
+    }
+
+    blink = 1 - blink;
+
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      language = (language + 1) % PW_LANG_COUNT;
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      language = (language + PW_LANG_COUNT - 1) % PW_LANG_COUNT;
+    }
+
+    display.fillScreen(GxEPD_BLACK);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setTextColor(GxEPD_WHITE);
+    display.setCursor(10, 20);
+    display.println(PW_SETTINGS_LANGUAGE);
+
+    // Language names are deliberately never translated (see
+    // pwLanguageName()) - a German speaker still needs to recognize
+    // "Deutsch" while the UI is currently showing English strings.
+    display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    int16_t x1, y1;
+    uint16_t w, h;
+    const char *name = pwLanguageName(language);
+    display.getTextBounds(name, 0, 60, &x1, &y1, &w, &h);
+    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, GxEPD_WHITE);
+    display.setCursor(10, 60);
+    display.println(name);
+
+    display.display(true); // partial refresh
+  }
+
+  if (confirmed && !cancelled) {
+    picowatchLanguage = language;
+    saveLanguage();
   }
 
   showSettingsMenu(settingsMenuIndex, false);

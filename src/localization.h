@@ -1,32 +1,158 @@
 #ifndef PICOWATCH_LOCALIZATION_H
 #define PICOWATCH_LOCALIZATION_H
 
-// Compile-time language selection, same mechanism as InkWatchy
-// (github.com/Szybet/InkWatchy, src/defines/localization.h) - ported
-// directly per Jan's request, not just "inspired by": a language macro
-// picks one of several per-language header files full of string
-// #defines, all used throughout PicoWatch.cpp instead of hardcoded
-// literals. This is compile-time only (like InkWatchy's), not an
-// on-device runtime toggle - switching language means setting
-// PICOWATCH_LANG below (or in config.h before this include) and
-// reflashing.
-#define PW_LANG_EN 1
-#define PW_LANG_DE 2
+#include "localization_ids.h"
+
+// Runtime language selection - every PW_XXX macro below resolves to a
+// pwStr(PW_STR_XXX) call that indexes into whichever language table
+// (languages/localization_*.h) picowatchLanguage currently points at, so
+// PicoWatch.cpp's existing PW_XXX call sites needed zero changes when this
+// moved from compile-time #define macros to a runtime-switchable Settings
+// menu entry ("Language", see PicoWatch::showLanguageSettings()).
+//
+// PW_LANG_EN/PW_LANG_DE double as both the picowatchLanguage runtime value
+// AND (via PICOWATCH_LANG below) the compile-time default/fallback before
+// the persisted choice is loaded from NVS.
+#define PW_LANG_EN 0
+#define PW_LANG_DE 1
+#define PW_LANG_COUNT 2
 
 #ifndef PICOWATCH_LANG
 #define PICOWATCH_LANG PW_LANG_DE // Jan's own build defaults to German
 #endif
 
-#if PICOWATCH_LANG == PW_LANG_DE
-#include "languages/localization_de.h"
-#elif PICOWATCH_LANG == PW_LANG_EN
-#include "languages/localization_en.h"
-#else
-#include "languages/localization_en.h"
-#warning "Unsupported PICOWATCH_LANG - defaulting to English. Define PW_LANG_EN or PW_LANG_DE."
-#endif
+// Defined in localization.cpp. currentLanguage is RTC_DATA_ATTR (survives
+// deep sleep like the other runtime settings) and reloaded from Preferences
+// in PicoWatch::onReset(), same pattern as font size/button settings.
+extern uint8_t picowatchLanguage;
+const char *pwStr(PwStringId id);
+const char *const *pwDayLabels(); // PW_STEPS_DAY_LABELS replacement - see below
+const char *pwLanguageName(uint8_t language); // "English"/"Deutsch" - always
+                                               // shown in their own language,
+                                               // never translated, for the
+                                               // Language picker screen
 
 // Adding a new language: see languages/localization_template.h for the full
-// copy-and-translate walkthrough (new PW_LANG_XX macro + #elif branch above).
+// copy-and-translate walkthrough (new PW_LANG_XX + a new kLocalizedStrings_xx
+// table registered in localization.cpp's language table list).
+
+#define PW_MENU_CHANGE_WATCHFACE pwStr(PW_STR_MENU_CHANGE_WATCHFACE)
+#define PW_MENU_STOPWATCH pwStr(PW_STR_MENU_STOPWATCH)
+#define PW_MENU_STEPS pwStr(PW_STR_MENU_STEPS)
+#define PW_MENU_ALARM pwStr(PW_STR_MENU_ALARM)
+#define PW_MENU_WEATHER pwStr(PW_STR_MENU_WEATHER)
+#define PW_MENU_SETTINGS pwStr(PW_STR_MENU_SETTINGS)
+#define PW_SETTINGS_ABOUT pwStr(PW_STR_SETTINGS_ABOUT)
+#define PW_SETTINGS_VIBRATE pwStr(PW_STR_SETTINGS_VIBRATE)
+#define PW_SETTINGS_ACCELEROMETER pwStr(PW_STR_SETTINGS_ACCELEROMETER)
+#define PW_SETTINGS_SET_TIME pwStr(PW_STR_SETTINGS_SET_TIME)
+#define PW_SETTINGS_SETUP_WIFI pwStr(PW_STR_SETTINGS_SETUP_WIFI)
+#define PW_SETTINGS_SYNC_NTP pwStr(PW_STR_SETTINGS_SYNC_NTP)
+#define PW_SETTINGS_SET_TIMEZONE pwStr(PW_STR_SETTINGS_SET_TIMEZONE)
+#define PW_SETTINGS_SET_CITY pwStr(PW_STR_SETTINGS_SET_CITY)
+#define PW_SETTINGS_UPDATE_GITHUB pwStr(PW_STR_SETTINGS_UPDATE_GITHUB)
+#define PW_SETTINGS_BUTTON_SETTINGS pwStr(PW_STR_SETTINGS_BUTTON_SETTINGS)
+#define PW_SETTINGS_FONT_SIZE pwStr(PW_STR_SETTINGS_FONT_SIZE)
+#define PW_SETTINGS_LANGUAGE pwStr(PW_STR_SETTINGS_LANGUAGE)
+#define PW_STOPWATCH_TITLE pwStr(PW_STR_STOPWATCH_TITLE)
+#define PW_STOPWATCH_UP_RESET pwStr(PW_STR_STOPWATCH_UP_RESET)
+#define PW_STOPWATCH_MENU_STOP pwStr(PW_STR_STOPWATCH_MENU_STOP)
+#define PW_STOPWATCH_MENU_START pwStr(PW_STR_STOPWATCH_MENU_START)
+#define PW_STEPS_TITLE pwStr(PW_STR_STEPS_TITLE)
+#define PW_ALARM_TITLE pwStr(PW_STR_ALARM_TITLE)
+#define PW_ALARM_ENABLED_LABEL pwStr(PW_STR_ALARM_ENABLED_LABEL)
+#define PW_YES pwStr(PW_STR_YES)
+#define PW_NO pwStr(PW_STR_NO)
+#define PW_BUTTON_SETTINGS_TITLE pwStr(PW_STR_BUTTON_SETTINGS_TITLE)
+#define PW_BUTTON_SETTINGS_SWAP pwStr(PW_STR_BUTTON_SETTINGS_SWAP)
+#define PW_BUTTON_SETTINGS_UP_SHORT pwStr(PW_STR_BUTTON_SETTINGS_UP_SHORT)
+#define PW_BUTTON_SETTINGS_UP_LONG pwStr(PW_STR_BUTTON_SETTINGS_UP_LONG)
+#define PW_BUTTON_SETTINGS_DOWN_SHORT pwStr(PW_STR_BUTTON_SETTINGS_DOWN_SHORT)
+#define PW_BUTTON_SETTINGS_DOWN_LONG pwStr(PW_STR_BUTTON_SETTINGS_DOWN_LONG)
+#define PW_ACTION_NONE pwStr(PW_STR_ACTION_NONE)
+#define PW_ACTION_SETTINGS pwStr(PW_STR_ACTION_SETTINGS)
+#define PW_ACTION_CHANGE_WATCHFACE pwStr(PW_STR_ACTION_CHANGE_WATCHFACE)
+#define PW_ACTION_WEATHER pwStr(PW_STR_ACTION_WEATHER)
+#define PW_ACTION_STOPWATCH pwStr(PW_STR_ACTION_STOPWATCH)
+#define PW_ACTION_ALARM pwStr(PW_STR_ACTION_ALARM)
+#define PW_FONT_SIZE_TITLE pwStr(PW_STR_FONT_SIZE_TITLE)
+#define PW_FONT_SIZE_SUBTITLE pwStr(PW_STR_FONT_SIZE_SUBTITLE)
+#define PW_FONT_SIZE_SMALL pwStr(PW_STR_FONT_SIZE_SMALL)
+#define PW_FONT_SIZE_DEFAULT pwStr(PW_STR_FONT_SIZE_DEFAULT)
+#define PW_FONT_SIZE_BIG pwStr(PW_STR_FONT_SIZE_BIG)
+#define PW_WEATHER_LOADING pwStr(PW_STR_WEATHER_LOADING)
+#define PW_WEATHER_CHECK_WIFI pwStr(PW_STR_WEATHER_CHECK_WIFI)
+#define PW_WEATHER_CHECK_API_KEY pwStr(PW_STR_WEATHER_CHECK_API_KEY)
+#define PW_WEATHER_COND_CLOUDY pwStr(PW_STR_WEATHER_COND_CLOUDY)
+#define PW_WEATHER_COND_FEW_CLOUDS pwStr(PW_STR_WEATHER_COND_FEW_CLOUDS)
+#define PW_WEATHER_COND_CLEAR pwStr(PW_STR_WEATHER_COND_CLEAR)
+#define PW_WEATHER_COND_HAZE pwStr(PW_STR_WEATHER_COND_HAZE)
+#define PW_WEATHER_COND_SNOW pwStr(PW_STR_WEATHER_COND_SNOW)
+#define PW_WEATHER_COND_RAIN pwStr(PW_STR_WEATHER_COND_RAIN)
+#define PW_WEATHER_COND_DRIZZLE pwStr(PW_STR_WEATHER_COND_DRIZZLE)
+#define PW_WEATHER_COND_STORM pwStr(PW_STR_WEATHER_COND_STORM)
+#define PW_WEATHER_COND_UNKNOWN pwStr(PW_STR_WEATHER_COND_UNKNOWN)
+#define PW_ABOUT_LIBVER pwStr(PW_STR_ABOUT_LIBVER)
+#define PW_ABOUT_REV pwStr(PW_STR_ABOUT_REV)
+#define PW_ABOUT_BATT pwStr(PW_STR_ABOUT_BATT)
+#define PW_ABOUT_VOLT_UNIT pwStr(PW_STR_ABOUT_VOLT_UNIT)
+#define PW_ABOUT_UPTIME pwStr(PW_STR_ABOUT_UPTIME)
+#define PW_ABOUT_DAYS pwStr(PW_STR_ABOUT_DAYS)
+#define PW_ABOUT_HOURS pwStr(PW_STR_ABOUT_HOURS)
+#define PW_ABOUT_MINUTES pwStr(PW_STR_ABOUT_MINUTES)
+#define PW_ABOUT_SSID pwStr(PW_STR_ABOUT_SSID)
+#define PW_ABOUT_IP pwStr(PW_STR_ABOUT_IP)
+#define PW_ABOUT_WIFI_NOT_CONNECTED pwStr(PW_STR_ABOUT_WIFI_NOT_CONNECTED)
+#define PW_GITHUB_CHECKING pwStr(PW_STR_GITHUB_CHECKING)
+#define PW_GITHUB_WIFI_NOT_CONNECTED pwStr(PW_STR_GITHUB_WIFI_NOT_CONNECTED)
+#define PW_GITHUB_NO_RELEASE pwStr(PW_STR_GITHUB_NO_RELEASE)
+#define PW_GITHUB_NETWORK_ERROR pwStr(PW_STR_GITHUB_NETWORK_ERROR)
+#define PW_GITHUB_BAD_DATA pwStr(PW_STR_GITHUB_BAD_DATA)
+#define PW_GITHUB_ALREADY_LATEST_1 pwStr(PW_STR_GITHUB_ALREADY_LATEST_1)
+#define PW_GITHUB_ALREADY_LATEST_2 pwStr(PW_STR_GITHUB_ALREADY_LATEST_2)
+#define PW_GITHUB_ASSET_NOT_FOUND pwStr(PW_STR_GITHUB_ASSET_NOT_FOUND)
+#define PW_GITHUB_IN_LATEST_RELEASE pwStr(PW_STR_GITHUB_IN_LATEST_RELEASE)
+#define PW_GITHUB_DOWNLOADING pwStr(PW_STR_GITHUB_DOWNLOADING)
+#define PW_GITHUB_DOWNLOAD_FAILED pwStr(PW_STR_GITHUB_DOWNLOAD_FAILED)
+#define PW_GITHUB_NOT_ENOUGH_SPACE pwStr(PW_STR_GITHUB_NOT_ENOUGH_SPACE)
+#define PW_GITHUB_FOR_UPDATE pwStr(PW_STR_GITHUB_FOR_UPDATE)
+#define PW_GITHUB_VERIFY_1 pwStr(PW_STR_GITHUB_VERIFY_1)
+#define PW_GITHUB_VERIFY_2 pwStr(PW_STR_GITHUB_VERIFY_2)
+#define PW_GITHUB_FAILED_1 pwStr(PW_STR_GITHUB_FAILED_1)
+#define PW_GITHUB_FAILED_2 pwStr(PW_STR_GITHUB_FAILED_2)
+#define PW_GITHUB_VERIFIED pwStr(PW_STR_GITHUB_VERIFIED)
+#define PW_GITHUB_REBOOTING pwStr(PW_STR_GITHUB_REBOOTING)
+#define PW_BUZZ pwStr(PW_STR_BUZZ)
+#define PW_SET_CITY_TITLE pwStr(PW_STR_SET_CITY_TITLE)
+#define PW_SET_CITY_FIND_1 pwStr(PW_STR_SET_CITY_FIND_1)
+#define PW_ACCEL_FAIL pwStr(PW_STR_ACCEL_FAIL)
+#define PW_ACCEL_FACE_DOWN pwStr(PW_STR_ACCEL_FACE_DOWN)
+#define PW_ACCEL_FACE_UP pwStr(PW_STR_ACCEL_FACE_UP)
+#define PW_ACCEL_BOTTOM_EDGE pwStr(PW_STR_ACCEL_BOTTOM_EDGE)
+#define PW_ACCEL_TOP_EDGE pwStr(PW_STR_ACCEL_TOP_EDGE)
+#define PW_ACCEL_RIGHT_EDGE pwStr(PW_STR_ACCEL_RIGHT_EDGE)
+#define PW_ACCEL_LEFT_EDGE pwStr(PW_STR_ACCEL_LEFT_EDGE)
+#define PW_ACCEL_ERROR pwStr(PW_STR_ACCEL_ERROR)
+#define PW_WIFI_CONNECTING pwStr(PW_STR_WIFI_CONNECTING)
+#define PW_WIFI_CONNECT_PHONE_TO pwStr(PW_STR_WIFI_CONNECT_PHONE_TO)
+#define PW_WIFI_PASSWORD_NEXT_1 pwStr(PW_STR_WIFI_PASSWORD_NEXT_1)
+#define PW_WIFI_PASSWORD_NEXT_2 pwStr(PW_STR_WIFI_PASSWORD_NEXT_2)
+#define PW_WIFI_SETUP_FAILED pwStr(PW_STR_WIFI_SETUP_FAILED)
+#define PW_WIFI_TIMED_OUT pwStr(PW_STR_WIFI_TIMED_OUT)
+#define PW_WIFI_CONNECTED_TO pwStr(PW_STR_WIFI_CONNECTED_TO)
+#define PW_WIFI_OPEN_IN_BROWSER pwStr(PW_STR_WIFI_OPEN_IN_BROWSER)
+#define PW_WIFI_BACK_TO_DISCONNECT pwStr(PW_STR_WIFI_BACK_TO_DISCONNECT)
+#define PW_WIFI_RECEIVING_UPDATE_1 pwStr(PW_STR_WIFI_RECEIVING_UPDATE_1)
+#define PW_WIFI_RECEIVING_UPDATE_2 pwStr(PW_STR_WIFI_RECEIVING_UPDATE_2)
+#define PW_WIFI_AP_CONNECT_TO pwStr(PW_STR_WIFI_AP_CONNECT_TO)
+#define PW_WIFI_AP_SSID_LABEL pwStr(PW_STR_WIFI_AP_SSID_LABEL)
+#define PW_WIFI_AP_PASS_LABEL pwStr(PW_STR_WIFI_AP_PASS_LABEL)
+#define PW_WIFI_AP_IP_LABEL pwStr(PW_STR_WIFI_AP_IP_LABEL)
+#define PW_NTP_SYNCING pwStr(PW_STR_NTP_SYNCING)
+#define PW_NTP_GMT_OFFSET pwStr(PW_STR_NTP_GMT_OFFSET)
+#define PW_NTP_SUCCESS pwStr(PW_STR_NTP_SUCCESS)
+#define PW_NTP_CURRENT_TIME pwStr(PW_STR_NTP_CURRENT_TIME)
+#define PW_NTP_FAILED pwStr(PW_STR_NTP_FAILED)
+#define PW_NTP_WIFI_NOT_CONFIGURED pwStr(PW_STR_NTP_WIFI_NOT_CONFIGURED)
 
 #endif
