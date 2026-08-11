@@ -1,13 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="100%" height="100%">
-  <!-- Weißer e-Paper Hintergrund -->
-  <rect width="400" height="400" fill="#FFFFFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 360" width="100%" height="100%">
+  <!-- Hintergrund (Weiß für Light Mode) -->
+  <rect width="400" height="360" fill="#FFFFFF"/>
   
-  <!-- Kombiniertes P + W Monogramm in Schwarz -->
+  <!-- Smartwatch-Gehäuse mit Seitentaste -->
+  <rect x="75" y="30" width="250" height="210" rx="36" ry="36" fill="none" stroke="#000000" stroke-width="12"/>
+  <rect x="325" y="110" width="12" height="50" rx="5" ry="5" fill="#000000"/>
+  
+  <!-- Icon im Display: Klare, getrennte Buchstaben P und W -->
   <g fill="none" stroke="#000000" stroke-width="18" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M 130 220 L 130 100 C 130 65, 235 65, 235 125 C 235 170, 175 180, 130 180 C 130 180, 130 205, 130 225 C 130 240, 160 250, 175 220 L 205 270 L 235 220 L 270 270" />
+    <!-- P -->
+    <path d="M 125 85 L 125 185 M 125 85 L 165 85 C 190 85, 190 135, 125 135" />
+    <!-- W -->
+    <path d="M 205 110 L 225 185 L 245 140 L 265 185 L 285 110" />
   </g>
   
-  <!-- Schriftzug PICO WATCH in Schwarz -->
-  <text x="200" y="325" font-family="'Inter', 'Montserrat', 'Helvetica Neue', Arial, sans-serif" font-weight="800" font-size="34" fill="#000000" text-anchor="middle" letter-spacing="4">PICO</text>
-  <text x="200" y="360" font-family="'Inter', 'Montserrat', 'Helvetica Neue', Arial, sans-serif" font-weight="600" font-size="22" fill="#000000" text-anchor="middle" letter-spacing="7">WATCH</text>
+  <!-- Schriftzug PICO WATCH -->
+  <text x="200" y="310" font-family="'Inter', 'Montserrat', 'Helvetica Neue', Arial, sans-serif" font-weight="900" font-size="32" fill="#000000" text-anchor="middle" letter-spacing="6">PICO WATCH</text>
 </svg>
