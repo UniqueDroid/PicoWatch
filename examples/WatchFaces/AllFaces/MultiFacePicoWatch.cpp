@@ -169,7 +169,7 @@ void MultiFacePicoWatch::drawBasic() {
 // ---- 7_SEG (ported from PicoWatch_7_SEG.cpp) ----
 
 namespace {
-constexpr bool k7SegDarkMode = true;
+constexpr bool k7SegDarkMode = false;
 constexpr uint8_t k7SegBatterySegmentWidth = 7;
 constexpr uint8_t k7SegBatterySegmentHeight = 11;
 constexpr uint8_t k7SegBatterySegmentSpacing = 9;
