@@ -1,3 +1,5 @@
+<p align="center"><img src="extras/picowatch_logo.svg" alt="PicoWatch logo" width="200"></p>
+
 # PicoWatch — E-Paper Watch Firmware
 
 PicoWatch is Jan's personal fork of [SQFMI's Watchy](https://github.com/sqfmi/Watchy), an
