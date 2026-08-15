@@ -4668,11 +4668,27 @@ String savedPage(const String &title, const String &backHref, const String &msg 
 // local String's backing buffer isn't guaranteed to outlive the whole
 // WIFI_STAY_CONNECTED_TIMEOUT window the portal stays up for; this does.
 String gCustomMenuHtml;
+
+// handleRequest() is `protected` in the stock WiFiManager (pfsense-status-
+// esp32 gets around this with a source-patched fork, third_party/
+// wifimanager-patched/ here, but that's only ever applied to the LOCAL
+// dev install - the release GitHub Actions workflows install a fresh,
+// unpatched WiFiManager from the registry every run and never copy the
+// patch over it). A protected member is reachable from a subclass though,
+// so re-exposing it here works against the plain stock library everywhere
+// - no workflow/CI changes, no "did the patch actually get applied"
+// class of bug. (Found this the hard way: the very first tagged release
+// this repo ever built - v1.1.0, 15.08.2026 - failed in CI with exactly
+// this "handleRequest is protected" compile error.)
+class PicoWatchWiFiManager : public WiFiManager {
+ public:
+  using WiFiManager::handleRequest;
+};
 }  // namespace
 
 void PicoWatch::setupWifi() {
   display.epd2.setBusyCallback(0); // temporarily disable lightsleep on busy
-  WiFiManager wifiManager;
+  PicoWatchWiFiManager wifiManager;
   wifiManager.setAPCallback(_configModeCallback);
   wifiManager.setCustomHeadElement(kWifiPortalTheme);
 
