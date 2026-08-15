@@ -17,17 +17,22 @@
 #include "Px437_IBM_BIOS5pt7b.h"
 #include "Seven_Segment10pt7b.h"
 
-// PicoWatch.cpp defines this the same way, but only for its own translation
-// unit - AllFaces builds exclusively for V3 (ARDUINO_ESP32S3_DEV), so this
-// always matches.
-#define ACTIVE_LOW 0
+// PicoWatch.cpp defines this the same way for its own translation unit -
+// mirrored here since AllFaces now also builds for V1/V1.5/V2 (see
+// config.h), where the button wiring is active-high instead of active-low.
+#ifdef ARDUINO_ESP32S3_DEV
+  #define ACTIVE_LOW 0
+#else
+  #define ACTIVE_LOW 1
+#endif
 
 // Persists across deep sleep like guiState/menuIndex (declared in PicoWatch.cpp).
 RTC_DATA_ATTR int selectedFace = 0;
 
 namespace {
 constexpr const char *kFaceNames[MultiFacePicoWatch::FACE_COUNT] = {
-    "Basic", "7 Segment", "DOS", "MacPaint", "Mario", "Pokemon", "Starry Horizon", "Tetris"};
+    "Basic",  "7 Segment Hell", "7 Segment Dunkel", "DOS",           "MacPaint",
+    "Mario",  "Pokemon",        "Starry Horizon",   "Tetris"};
 
 // Persisted in flash (NVS) so a reset doesn't silently revert to face 0 -
 // same "picowatch" namespace PicoWatch.cpp's setTimezone() uses, different key.
@@ -43,6 +48,13 @@ void MultiFacePicoWatch::onReset() {
   if (selectedFace < 0 || selectedFace >= FACE_COUNT) selectedFace = 0;
 }
 
+const char *MultiFacePicoWatch::webFaceName(int index) {
+  if (index < 0 || index >= FACE_COUNT) return "";
+  return kFaceNames[index];
+}
+
+int MultiFacePicoWatch::webSelectedFace() { return selectedFace; }
+
 namespace {
 void saveSelectedFace(int face) {
   Preferences prefs;
@@ -51,6 +63,12 @@ void saveSelectedFace(int face) {
   prefs.end();
 }
 }  // namespace
+
+void MultiFacePicoWatch::webSetFace(int index) {
+  if (index < 0 || index >= FACE_COUNT) return;
+  selectedFace = index;
+  saveSelectedFace(index);
+}
 
 void MultiFacePicoWatch::changeWatchface() {
   guiState = APP_STATE;
@@ -72,6 +90,17 @@ void MultiFacePicoWatch::changeWatchface() {
   display.setFullWindow();
 
   bool confirmed = true;
+  // Redraw only when something actually changed, not every loop spin -
+  // display.display() below blocks for a couple hundred ms per partial
+  // refresh, and this loop used to call it unconditionally on EVERY
+  // iteration regardless of button state. That left the loop blocked
+  // inside the display driver (not polling digitalRead() at all) far more
+  // of the time than the main menu's equivalent fast-menu loop (which only
+  // redraws reactively, after an actual detected press) - a tap landing
+  // entirely inside one of those windows was silently lost, needing a
+  // second press to register. Matches Jan's report that this only ever
+  // happened on the watchface picker, never the main/settings/etc. menus.
+  bool needsRedraw = true;
   while (1) {
     if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
       confirmed = true;
@@ -83,28 +112,27 @@ void MultiFacePicoWatch::changeWatchface() {
     }
     if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
       pick = (pick + 1) % FACE_COUNT;
+      needsRedraw = true;
+      // Also fixes the flip side of the same bug: without waiting for
+      // release, holding the button (now that redraws no longer throttle
+      // the loop to display-refresh speed) would advance far more than
+      // one step per press - see identical fix pattern elsewhere in
+      // PicoWatch.cpp (e.g. setTimezone()'s Menu-button debounce).
+      while (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) delay(10);
     }
     if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
       pick = (pick - 1 + FACE_COUNT) % FACE_COUNT;
+      needsRedraw = true;
+      while (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) delay(10);
     }
 
-    display.fillScreen(GxEPD_BLACK);
-    display.setFont(&FreeMonoBold9pt7b);
-    for (int i = 0; i < FACE_COUNT; i++) {
-      const int16_t yPos = MENU_HEIGHT + (MENU_HEIGHT * i);
-      display.setCursor(0, yPos);
-      if (i == pick) {
-        int16_t x1, y1;
-        uint16_t w, h;
-        display.getTextBounds(kFaceNames[i], 0, yPos, &x1, &y1, &w, &h);
-        display.fillRect(x1 - 1, y1 - 10, 200, h + 15, GxEPD_WHITE);
-        display.setTextColor(GxEPD_BLACK);
-      } else {
-        display.setTextColor(GxEPD_WHITE);
-      }
-      display.println(kFaceNames[i]);
-    }
-    display.display(true);  // partial refresh
+    if (!needsRedraw) continue;
+    needsRedraw = false;
+
+    // Shared with the main/settings/games/time/debug menus - same font,
+    // spacing and scrolling behavior, and automatically follows Settings ->
+    // Font Size instead of a hardcoded font like this screen used to have.
+    uiRenderList(kFaceNames, FACE_COUNT, pick, true);
   }
 
   if (confirmed) {
@@ -123,24 +151,25 @@ void MultiFacePicoWatch::drawWatchFace() {
       drawBasic();
       break;
     case 1:
-      draw7Seg();
-      break;
     case 2:
-      drawDos();
+      draw7Seg();  // 1 = light, 2 = dark - draw7Seg() reads selectedFace itself
       break;
     case 3:
-      drawMacPaint();
+      drawDos();
       break;
     case 4:
-      drawMario();
+      drawMacPaint();
       break;
     case 5:
-      drawPokemon();
+      drawMario();
       break;
     case 6:
-      drawStarryHorizon();
+      drawPokemon();
       break;
     case 7:
+      drawStarryHorizon();
+      break;
+    case 8:
       drawTetris();
       break;
     default:
@@ -169,7 +198,9 @@ void MultiFacePicoWatch::drawBasic() {
 // ---- 7_SEG (ported from PicoWatch_7_SEG.cpp) ----
 
 namespace {
-constexpr bool k7SegDarkMode = false;
+// Set by draw7Seg() from selectedFace right before drawing (index 1 = light,
+// index 2 = dark) - the draw7Seg* helpers below all read it.
+bool k7SegDarkMode = false;
 constexpr uint8_t k7SegBatterySegmentWidth = 7;
 constexpr uint8_t k7SegBatterySegmentHeight = 11;
 constexpr uint8_t k7SegBatterySegmentSpacing = 9;
@@ -179,6 +210,7 @@ constexpr uint8_t k7SegWeatherIconHeight = 32;
 
 void MultiFacePicoWatch::draw7Seg() {
   using namespace face7seg;
+  k7SegDarkMode = (selectedFace == 2);
   display.fillScreen(k7SegDarkMode ? GxEPD_BLACK : GxEPD_WHITE);
   display.setTextColor(k7SegDarkMode ? GxEPD_WHITE : GxEPD_BLACK);
   draw7SegTime();
@@ -251,7 +283,7 @@ void MultiFacePicoWatch::draw7SegSteps() {
   // Midnight reset+history-capture now happens centrally in
   // PicoWatch::_captureStepsAtMidnight(), regardless of which face is active -
   // see PicoWatch.cpp's WATCHFACE_STATE tick handler.
-  uint32_t stepCount = sensor.getCounter();
+  uint32_t stepCount = todaySteps();
   display.drawBitmap(10, 165, steps, 19, 23, k7SegDarkMode ? GxEPD_WHITE : GxEPD_BLACK);
   display.setCursor(35, 190);
   display.println(stepCount);

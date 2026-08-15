@@ -76,11 +76,10 @@ void PicoWatch7SEG::drawDate(){
     display.println(tmYearToCalendar(currentTime.Year));// offset from 1970, since year is stored in uint8_t
 }
 void PicoWatch7SEG::drawSteps(){
-    // reset step counter at midnight
-    if (currentTime.Hour == 0 && currentTime.Minute == 0){
-      sensor.resetStepCounter();
-    }
-    uint32_t stepCount = sensor.getCounter();
+    // Midnight capture/reset (incl. the persisted stepsBaseline used by
+    // todaySteps() below) is handled centrally in PicoWatch::init()'s
+    // per-minute tick, not here - see _captureStepsAtMidnight().
+    uint32_t stepCount = todaySteps();
     display.drawBitmap(10, 165, steps, 19, 23, DARKMODE ? GxEPD_WHITE : GxEPD_BLACK);
     display.setCursor(35, 190);
     display.println(stepCount);

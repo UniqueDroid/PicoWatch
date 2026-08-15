@@ -37,9 +37,9 @@ const char *const kLocalizedStrings_xx[PW_STR_COUNT] = {
   // Top-level menu (PicoWatch::showMenu()/showFastMenu())
   "Change Watchface",  // PW_MENU_CHANGE_WATCHFACE
   "Stopwatch",  // PW_MENU_STOPWATCH
-  "Steps (7 Days)",  // PW_MENU_STEPS
+  "Steps",  // PW_MENU_STEPS
   "Alarm",  // PW_MENU_ALARM
-  "Weather (5 Days)",  // PW_MENU_WEATHER
+  "Weather",  // PW_MENU_WEATHER
   "Settings",  // PW_MENU_SETTINGS
   // Settings menu (PicoWatch::showSettingsMenu()/showFastSettingsMenu())
   "About PicoWatch",  // PW_SETTINGS_ABOUT
@@ -185,6 +185,28 @@ const char *const kLocalizedStrings_xx[PW_STR_COUNT] = {
   "Hourly Vibrate",  // PW_STR_VIBWIN_TITLE
   "From: ",  // PW_STR_VIBWIN_FROM_LABEL
   "To: ",  // PW_STR_VIBWIN_TO_LABEL
+  "Debug",  // PW_STR_SETTINGS_DEBUG
+  "Invert Menu",  // PW_STR_SETTINGS_INVERT_MENU
+  "Notifications",  // PW_STR_MENU_NOTIFICATIONS
+  "No notifications",  // PW_STR_NOTIFICATIONS_EMPTY
+  "Menu: read  Back: dismiss",  // PW_STR_NOTIFICATION_HINT
+  "Menu: pair now",  // PW_STR_NOTIFICATIONS_PAIR_HINT
+  "Bluetooth Pairing",  // PW_STR_NOTIFICATIONS_PAIRING
+  "Add device in Gadgetbridge now (Back to cancel)",  // PW_STR_NOTIFICATIONS_PAIRING_HINT
+  "Check Interval",  // PW_STR_TIME_NOTIFY_INTERVAL
+  "How often to check for messages",  // PW_STR_NOTIFY_INTERVAL_SUBTITLE
+  "Menu: delete  Back: dismiss",  // PW_STR_NOTIFICATION_DELETE_HINT
+  "Internet Access",  // PW_STR_INTERNET_ACCESS_TITLE
+  "WiFi",  // PW_STR_INTERNET_ACCESS_WIFI
+  "Bluetooth",  // PW_STR_INTERNET_ACCESS_BLE
+  "BLE uses your phone via Gadgetbridge",  // PW_STR_INTERNET_ACCESS_HINT
+  "Notification Settings",  // PW_STR_NOTIF_SETTINGS_TITLE
+  "Popup: ",  // PW_STR_NOTIF_SETTINGS_POPUP_LABEL
+  "Duration: ",  // PW_STR_NOTIF_SETTINGS_DURATION_LABEL
+  "Icon: ",  // PW_STR_NOTIF_SETTINGS_ICON_LABEL
+  "Icon Color: ",  // PW_STR_NOTIF_SETTINGS_ICON_COLOR_LABEL
+  "Light",  // PW_STR_NOTIF_SETTINGS_ICON_LIGHT
+  "Dark",  // PW_STR_NOTIF_SETTINGS_ICON_DARK
 };
 
 // 7-day steps history labels (separate from the table above since it's an

@@ -35,6 +35,7 @@
     {
       "name": "WiFiManager",
       "version": "https://github.com/tzapu/WiFiManager.git#master"
-    }
+    },
+    { "name": "NimBLE-Arduino" }
   ]
 }

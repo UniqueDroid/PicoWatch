@@ -2,6 +2,15 @@
 #define PICOWATCH_H
 
 #include <Arduino.h>
+// Must come before the WiFiManager.h include below - its own bundled
+// wm_strings_en.h checks this at preprocess time and, if defined, swaps
+// its HTTP_HELP constant for an empty string instead of the built-in
+// "Available pages" table (full page-by-path/GitHub-credit block) that
+// WiFiManager's stock Info page always appended - Jan wanted that gone
+// (15.08.2026), and this is WiFiManager's own supported way to do it
+// (not something achievable via the public setShow*() setters below,
+// those only gate the Erase/Update buttons and Back link).
+#define WM_NOHELP
 #include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <NTPClient.h>
@@ -111,6 +120,13 @@ public:
   // showGamesMenu() but for TIME_MENU_LENGTH items and TIME_MENU_STATE.
   void showTimeMenu(byte timeMenuIndex, bool partialRefresh);
   void showFastTimeMenu(byte timeMenuIndex);
+  // Debug submenu (Vibrate Motor Test/Show Accelerometer) - reached via the
+  // Settings menu's "Debug" entry, so those two rarely-used diagnostic
+  // screens don't take up top-level Settings rows. Same list-rendering
+  // pattern as showTimeMenu()/showFastTimeMenu() but for DEBUG_MENU_LENGTH
+  // items and DEBUG_MENU_STATE.
+  void showDebugMenu(byte debugMenuIndex, bool partialRefresh);
+  void showFastDebugMenu(byte debugMenuIndex);
   // From-hour/To-hour range + on/off for the hourly vibrate-on-the-tick
   // feature (see PicoWatch::init()'s WATCHFACE_STATE tick handler),
   // persisted in flash (NVS). Same 3-field picker pattern as setAlarm().
@@ -118,7 +134,6 @@ public:
   void showAbout();
   void showBuzz();
   void showAccelerometer();
-  void showUpdateFW();
   void showSyncNTP();
   bool syncNTP();
   bool syncNTP(long gmt);
@@ -141,11 +156,25 @@ public:
   // Small/Default/Big font size for the top-level menu and Settings list
   // (see config.h UI_FONT_SIZE_*). Persisted in flash (NVS).
   void showFontSizeSettings();
+  // White-on-black vs black-on-white for every list menu (main, Settings,
+  // Games, Time, Debug, watchface picker). Persisted in flash (NVS).
+  void showInvertMenuSettings();
+  // How often (1-10 min) _checkBleNotifications() opens its BLE window -
+  // battery/latency tradeoff, see config.h's BLE_NOTIFY_CHECK_INTERVAL_MIN
+  // comment. Persisted in flash (NVS).
+  void showNotifyIntervalSettings();
   // English/Deutsch UI language picker (see localization.h). Persisted in
   // flash (NVS), reloaded in init()'s reset path like the other settings.
   void showLanguageSettings();
+  // WLAN vs BLE (Gadgetbridge phone proxy) for weather/time sync - see
+  // config.h's INTERNET_ACCESS_*/BLE_HTTP_* and _httpViaBle(). Persisted
+  // in flash (NVS).
+  void showInternetAccessSettings();
+  // Notification popup/icon controls (see config.h's NOTIFICATION_POPUP_*
+  // comment) - popup on/off, popup duration, watchface icon on/off, icon
+  // color. Persisted in flash (NVS).
+  void showNotificationSettings();
   weatherData getWeatherData();
-  void updateFWBegin();
 
   // Top-level Stopwatch and Steps (Last 7 Days) apps - generic, not
   // per-watchface, so implemented directly here rather than as virtual
@@ -154,8 +183,18 @@ public:
   // run inside 7_SEG's own draw method).
   void showStopwatch();
   void showStepsHistory();
+  // Today's step count so far - stepsBaseline (persisted, see PicoWatch.cpp)
+  // plus the BMA423's own live counter, NOT just sensor.getCounter() alone.
+  // Use this everywhere a watchface wants to show "steps today" instead of
+  // reading the sensor directly, otherwise a reset/reflash silently drops
+  // back to 0 (see PicoWatch.cpp's kPrefsStepsBaselineKey comment).
+  uint32_t todaySteps();
   void setAlarm(); // Hour/Minute/Enabled picker, persisted in flash (NVS)
   void showWeatherForecast(); // 5-day forecast via OpenWeatherMap's free /forecast endpoint
+  // Browses the last NOTIFICATION_COUNT phone notifications received via
+  // Gadgetbridge (see _checkBleNotifications()) - Menu opens the full
+  // title/body, Back returns to the main menu.
+  void showNotifications();
 
   void showWatchFace(bool partialRefresh);
   virtual void drawWatchFace(); // override this method for different watch
@@ -175,6 +214,23 @@ public:
   // silently fall back to face 0.
   virtual void onReset() {}
 
+  // Web UI hooks for the "Watchface" settings page (see setupWifi()) - a
+  // plain PicoWatch has exactly one, fixed watchface, so the default
+  // (count 0) hides that page entirely. MultiFacePicoWatch overrides all
+  // four to expose its face picker over the web too.
+  virtual int webFaceCount() { return 0; }
+  virtual const char *webFaceName(int index) { return ""; }
+  virtual int webSelectedFace() { return 0; }
+  virtual void webSetFace(int index) {}
+
+protected:
+  // Shared list-menu renderer (scrollable, width-truncated, respects
+  // Settings -> Font Size) - see PicoWatch.cpp for the full comment.
+  // Protected so a subclass's own list-style picker screens (e.g.
+  // MultiFacePicoWatch::changeWatchface()) can use it too instead of
+  // hand-rolling their own drawing loop with a hardcoded font.
+  void uiRenderList(const char *const *items, int total, int selectedIndex, bool partialRefresh);
+
 private:
   void _bmaConfig();
   // If a new day has started since the last check, records yesterday's step
@@ -182,6 +238,46 @@ private:
   // Called once per minute from init()'s WATCHFACE_STATE tick handler,
   // regardless of which watchface is active.
   void _captureStepsAtMidnight();
+  // Snapshots todaySteps() to NVS once per minute (skipped if unchanged
+  // since the last snapshot) so a reset never loses more than ~1 minute of
+  // progress - see kPrefsStepsBaselineKey's comment in PicoWatch.cpp.
+  void _persistStepsProgress();
+  // Every BLE_NOTIFY_CHECK_INTERVAL_MIN minutes, opens a short BLE
+  // advertising window (BLE_NOTIFY_WINDOW_MS) so Gadgetbridge can connect
+  // and flush any queued notifications - see config.h's BLE_NOTIFY_*
+  // comment. Called from init()'s per-minute WATCHFACE_STATE tick handler.
+  void _checkBleNotifications();
+  // Vibrates + shows the most recent notification as a dismissable
+  // overlay, called right after _checkBleNotifications() when a new one
+  // arrived. Menu opens the full detail (_showNotificationDetail()), any
+  // other button (or a timeout) dismisses back to the watchface.
+  void _showNotificationPopup();
+  bool _showNotificationDetail(int index); // true if Menu deleted it - see .cpp
+  // Small envelope icon, top-center, drawn over every watchface (called
+  // from the shared showWatchFace(), not per-face drawWatchFace()) while
+  // hasUnreadNotification is set - Jan wanted an always-visible hint that
+  // there's something to check without needing the popup to still be on
+  // screen. See .cpp for why this is a drawn shape, not a bitmap.
+  void _drawNotificationIndicator();
+  // Blocking HTTP-over-BLE request via Gadgetbridge's phone proxy (see
+  // BLE::httpGet() et al. and config.h's BLE_HTTP_*): opens a BLE window,
+  // waits for a phone to connect and Gadgetbridge's own handshake grace
+  // period, sends the request, waits for the response, tears the radio
+  // back down. Returns false on any timeout/failure; on success `body`
+  // holds Gadgetbridge's response body. Used by getWeatherData()/BLE time
+  // sync when Settings -> "Internet Access" is set to BLE instead of WLAN.
+  bool _httpViaBle(const String &url, String &body);
+  // BLE-mode equivalent of syncNTP() - true NTP needs a UDP socket, which
+  // Gadgetbridge's HTTP-only proxy can't carry, so this queries a public
+  // HTTP time API (config.h's BLE_TIME_API_URL) via _httpViaBle() instead
+  // and sets the RTC from its response. `gmt` is the offset in seconds,
+  // same meaning as syncNTP(long)'s parameter.
+  bool _syncTimeViaBle(long gmt);
+  // On-demand 60s BLE advertising window for initial Gadgetbridge pairing
+  // (the periodic _checkBleNotifications() window is too short/rare to
+  // reliably catch manually) - reached via Menu on showNotifications()'s
+  // empty-list screen.
+  void _pairBluetooth();
   static void _configModeCallback(WiFiManager *myWiFiManager);
   static uint16_t _readRegister(uint8_t address, uint8_t reg, uint8_t *data,
                                 uint16_t len);

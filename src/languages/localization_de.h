@@ -19,12 +19,12 @@ const char *const kLocalizedStrings_de[PW_STR_COUNT] = {
   // Top-level menu (PicoWatch::showMenu()/showFastMenu())
   "Zifferblatt",  // PW_MENU_CHANGE_WATCHFACE
   "Stoppuhr",  // PW_MENU_STOPWATCH
-  "Schritte (7 Tage)",  // PW_MENU_STEPS
+  "Schritte",  // PW_MENU_STEPS
   "Wecker",  // PW_MENU_ALARM
-  "Wetter (5 Tage)",  // PW_MENU_WEATHER
+  "Wetter",  // PW_MENU_WEATHER
   "Einstellungen",  // PW_MENU_SETTINGS
   // Settings menu (PicoWatch::showSettingsMenu()/showFastSettingsMenu())
-  "Ueber PicoWatch",  // PW_SETTINGS_ABOUT
+  "Über PicoWatch",  // PW_SETTINGS_ABOUT
   "Vibrationsmotor",  // PW_SETTINGS_VIBRATE
   "Beschleunigungssensor",  // PW_SETTINGS_ACCELEROMETER
   "Uhrzeit einstellen",  // PW_SETTINGS_SET_TIME
@@ -34,7 +34,7 @@ const char *const kLocalizedStrings_de[PW_STR_COUNT] = {
   "Stadt einstellen",  // PW_SETTINGS_SET_CITY
   "Online-Update",  // PW_SETTINGS_UPDATE_GITHUB
   "Tasten-Einst.",  // PW_SETTINGS_BUTTON_SETTINGS
-  "Schriftgroesse",  // PW_SETTINGS_FONT_SIZE
+  "Schriftgröße",  // PW_SETTINGS_FONT_SIZE
   "Sprache",  // PW_SETTINGS_LANGUAGE
   // Stopwatch (PicoWatch::showStopwatch())
   "Stoppuhr",  // PW_STOPWATCH_TITLE
@@ -167,6 +167,28 @@ const char *const kLocalizedStrings_de[PW_STR_COUNT] = {
   "Stuendl. Vibration",  // PW_STR_VIBWIN_TITLE
   "Von: ",  // PW_STR_VIBWIN_FROM_LABEL
   "Bis: ",  // PW_STR_VIBWIN_TO_LABEL
+  "Debug",  // PW_STR_SETTINGS_DEBUG
+  "Menue invertieren",  // PW_STR_SETTINGS_INVERT_MENU
+  "Nachrichten",  // PW_STR_MENU_NOTIFICATIONS
+  "Keine Nachrichten",  // PW_STR_NOTIFICATIONS_EMPTY
+  "Menu: lesen  Back: weg",  // PW_STR_NOTIFICATION_HINT
+  "Menu: jetzt koppeln",  // PW_STR_NOTIFICATIONS_PAIR_HINT
+  "Bluetooth-Kopplung",  // PW_STR_NOTIFICATIONS_PAIRING
+  "Jetzt in Gadgetbridge hinzufuegen (Back zum Abbrechen)",  // PW_STR_NOTIFICATIONS_PAIRING_HINT
+  "Abrufintervall",  // PW_STR_TIME_NOTIFY_INTERVAL
+  "Wie oft nach Nachrichten schauen",  // PW_STR_NOTIFY_INTERVAL_SUBTITLE
+  "Menu: loeschen  Back: weg",  // PW_STR_NOTIFICATION_DELETE_HINT
+  "Internet Zugang",  // PW_STR_INTERNET_ACCESS_TITLE
+  "WLAN",  // PW_STR_INTERNET_ACCESS_WIFI
+  "Bluetooth",  // PW_STR_INTERNET_ACCESS_BLE
+  "BLE nutzt dein Handy ueber Gadgetbridge",  // PW_STR_INTERNET_ACCESS_HINT
+  "Benachrichtigungen",  // PW_STR_NOTIF_SETTINGS_TITLE
+  "Popup: ",  // PW_STR_NOTIF_SETTINGS_POPUP_LABEL
+  "Dauer: ",  // PW_STR_NOTIF_SETTINGS_DURATION_LABEL
+  "Icon: ",  // PW_STR_NOTIF_SETTINGS_ICON_LABEL
+  "Icon-Farbe: ",  // PW_STR_NOTIF_SETTINGS_ICON_COLOR_LABEL
+  "Hell",  // PW_STR_NOTIF_SETTINGS_ICON_LIGHT
+  "Dunkel",  // PW_STR_NOTIF_SETTINGS_ICON_DARK
 };
 
 // 7-day steps history labels (separate from the table above since it's an

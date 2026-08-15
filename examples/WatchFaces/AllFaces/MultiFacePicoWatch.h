@@ -16,7 +16,7 @@
 // "numbers", 7_SEG's icons.h used bare names like "battery"/"wifi").
 class MultiFacePicoWatch : public PicoWatch {
  public:
-  static constexpr int FACE_COUNT = 8;
+  static constexpr int FACE_COUNT = 9;
 
  private:
   void drawBasic();
@@ -47,6 +47,11 @@ class MultiFacePicoWatch : public PicoWatch {
   void drawWatchFace() override;
   void changeWatchface() override;
   void onReset() override;
+
+  int webFaceCount() override { return FACE_COUNT; }
+  const char *webFaceName(int index) override;
+  int webSelectedFace() override;
+  void webSetFace(int index) override;
 };
 
 #endif

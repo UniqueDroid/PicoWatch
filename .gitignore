@@ -71,3 +71,9 @@ nbproject
 
 # Personal API keys/credentials - never commit these, see settings.h
 settings_secrets.h
+
+# arduino-cli compile output (examples/*/build/) and ad-hoc local build dirs
+examples/*/*/build/
+build_allfaces_v2/
+build_allfaces_v3/
+build_basic_v3/

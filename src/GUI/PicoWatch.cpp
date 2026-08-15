@@ -1,10 +1,17 @@
 #include "PicoWatch.h"
 #include "localization.h"
-#include "MenuIcons.h"
 #include <Preferences.h>
 #include <cstring> // memset/memcpy - PicoWatch::playTetris()'s board
 #include <mbedtls/sha256.h> // SHA256 verification for GitHub OTA - see PicoWatch::updateFromGithub()
 #include <Fonts/FreeMonoBold12pt7b.h> // "Big" menu font size - see PicoWatch::showFontSizeSettings()
+// Latin-1-range versions of the same two sizes, used ONLY by uiMenuFont()
+// (the shared list-menu renderer, uiRenderList()) so umlauts/ss render
+// correctly in menu text - every other screen still uses the ASCII-only
+// FreeMonoBold9pt7b/12pt7b above unchanged. See FreeMonoBold9pt8b.h for
+// how these were generated.
+#include "FreeMonoBold9pt8b.h"
+#include "FreeMonoBold12pt8b.h"
+#include "FreeMonoBold15pt8b.h" // new top "Big" menu font tier - see PicoWatch::showFontSizeSettings()
 
 // Cached copy of the persisted alarm (see setAlarm()/onReset()) - survives
 // deep sleep like guiState/menuIndex; loaded from flash once on reset rather
@@ -31,6 +38,13 @@ RTC_DATA_ATTR bool vibrateWindowEnabled;
 // vanish after the very next sleep cycle.
 RTC_DATA_ATTR char weatherCityID[12];
 
+// WiFi hostname (Settings -> Internet Access page, web menu only - see
+// setupWifi()'s comment on why) - defaults to the router-visible
+// "esp32-<chipid>" ESP32 core default, which is how Jan found the watch
+// in his router's client list in the first place and asked for something
+// recognizable instead (15.08.2026).
+RTC_DATA_ATTR char picoWatchHostname[32];
+
 // Button remapping (see PicoWatch::showButtonSettings()) - cached copies of
 // what's persisted in flash (NVS), loaded once on reset like the alarm
 // above rather than re-reading NVS on every single button press.
@@ -43,6 +57,47 @@ RTC_DATA_ATTR uint8_t watchfaceDownLongAction;
 // Menu/Settings-list font size (see PicoWatch::showFontSizeSettings()) -
 // same caching rationale as above.
 RTC_DATA_ATTR uint8_t uiFontSize;
+// Swaps the menu color scheme (see PicoWatch::showInvertMenuSettings()) -
+// false = white text on black (the original look), true = black text on
+// white.
+RTC_DATA_ATTR bool menuInverted;
+// How often _checkBleNotifications() opens its BLE window, in minutes (see
+// PicoWatch::showNotifyIntervalSettings()) - user-adjustable 1-10 min
+// tradeoff between notification latency and battery use, was a fixed
+// BLE_NOTIFY_CHECK_INTERVAL_MIN constant until Jan asked for control over
+// it (14.08.2026).
+RTC_DATA_ATTR uint8_t bleNotifyIntervalMin;
+// WLAN vs BLE (Gadgetbridge phone proxy) for weather/time sync - see
+// config.h's INTERNET_ACCESS_* and PicoWatch::showInternetAccessSettings().
+RTC_DATA_ATTR uint8_t internetAccessMode;
+// Notification popup/icon settings (see config.h's NOTIFICATION_POPUP_*
+// comment and PicoWatch::showNotificationSettings()).
+RTC_DATA_ATTR bool notificationPopupEnabled;
+RTC_DATA_ATTR uint8_t notificationPopupDurationS;
+RTC_DATA_ATTR bool notificationIconEnabled;
+// true = white icon (default, matches every current dark-background
+// watchface), false = black (for light-background faces, where a white
+// icon is invisible - the exact problem Jan ran into, 15.08.2026).
+RTC_DATA_ATTR bool notificationIconLight;
+
+// Gadgetbridge notification ring buffer (see PicoWatch::_checkBleNotifications()/
+// showNotifications()) - RTC_DATA_ATTR so it survives deep sleep without a
+// flash write on every single notification, AND separately mirrored to
+// NVS (see saveNotifications()/loadNotifications() below) so a true reset
+// doesn't lose them either - Jan wanted notifications to survive a reset
+// like any other setting (15.08.2026; originally these were deliberately
+// left reset-transient, that decision is superseded now).
+// notifications[0] is the most recent; a fixed-size ring, oldest entries
+// are silently overwritten once full (see onBleNotificationReceived() below).
+struct PwNotification {
+  char time[6];  // "HH:MM" - when the watch received it, not when the phone did
+  char src[NOTIFICATION_SRC_LEN];
+  char title[NOTIFICATION_TITLE_LEN];
+  char body[NOTIFICATION_BODY_LEN];
+};
+RTC_DATA_ATTR PwNotification notifications[NOTIFICATION_COUNT];
+RTC_DATA_ATTR int notificationCount;    // how many of the slots above are actually populated (0..NOTIFICATION_COUNT)
+RTC_DATA_ATTR bool hasUnreadNotification;
 
 // Random WiFi-setup AP password, generated once per true power-on reset (see
 // init()'s "default: reset" case) and shown on-screen in _configModeCallback
@@ -116,6 +171,37 @@ constexpr const char *kPrefsStepsHistKey = "stepsHist";
 constexpr const char *kPrefsStepsDayKey = "stepsDay";
 constexpr int kStepsHistoryDays = 7;
 
+// Today's step total, split into stepsBaseline (RTC_DATA_ATTR, see below -
+// steps already banked before the sensor's CURRENT counting period) plus
+// the BMA423's own live hardware counter (PicoWatch::todaySteps()) - the
+// sensor's counter alone isn't enough because PicoWatch::_bmaConfig()'s
+// sensor.begin() does a soft-reset of the whole chip (including its
+// feature engine, which the step counter lives in) on every true reset,
+// silently zeroing "today so far" on every reflash/power cycle. Persisting
+// just before that reset isn't possible either (begin() has to run before
+// we can talk to the chip at all, by which point the count is already
+// gone) - so instead this snapshots the running total to NVS periodically
+// (once per minute, only when it actually changed - see
+// PicoWatch::_persistStepsProgress()) and reloads that snapshot as the new
+// baseline in onReset(), accepting at most ~1 minute of steps lost on an
+// actual reset instead of the whole day.
+constexpr const char *kPrefsStepsBaselineKey = "stepsBase";
+
+uint32_t loadStepsBaseline() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  const uint32_t baseline = prefs.getUInt(kPrefsStepsBaselineKey, 0);
+  prefs.end();
+  return baseline;
+}
+
+void saveStepsBaseline(uint32_t total) {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putUInt(kPrefsStepsBaselineKey, total);
+  prefs.end();
+}
+
 // Not a real calendar day count, just a cheap monotonically-increasing
 // per-day number good enough to detect "a new day started since we last
 // looked" - exact calendar math isn't needed here.
@@ -131,6 +217,32 @@ void loadStepsHistory(int32_t (&history)[kStepsHistoryDays]) {
   if (got != sizeof(int32_t) * kStepsHistoryDays) {
     for (int i = 0; i < kStepsHistoryDays; i++) history[i] = 0;
   }
+}
+
+constexpr const char *kPrefsNotificationsKey = "notifs";
+constexpr const char *kPrefsNotificationCountKey = "notifCnt";
+
+void loadNotifications() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  const size_t want = sizeof(PwNotification) * NOTIFICATION_COUNT;
+  const size_t got = prefs.getBytes(kPrefsNotificationsKey, notifications, want);
+  notificationCount = got == want ? prefs.getInt(kPrefsNotificationCountKey, 0) : 0;
+  prefs.end();
+  if (notificationCount < 0 || notificationCount > NOTIFICATION_COUNT) notificationCount = 0;
+}
+
+// Called after every mutation (new notification arrives, one gets
+// deleted) - each write is at most sizeof(PwNotification)*NOTIFICATION_COUNT
+// (~1.4KB), infrequent enough (notifications, not a per-second value) that
+// NVS wear isn't a concern here the way it would be for something written
+// every minute.
+void saveNotifications() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putBytes(kPrefsNotificationsKey, notifications, sizeof(PwNotification) * NOTIFICATION_COUNT);
+  prefs.putInt(kPrefsNotificationCountKey, notificationCount);
+  prefs.end();
 }
 
 constexpr const char *kPrefsAlarmHourKey = "alarmH";
@@ -261,6 +373,79 @@ void saveFontSize() {
   prefs.end();
 }
 
+constexpr const char *kPrefsMenuInvertedKey = "menuInv";
+
+void loadMenuInverted() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  menuInverted = prefs.getBool(kPrefsMenuInvertedKey, false);
+  prefs.end();
+}
+
+void saveMenuInverted() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putBool(kPrefsMenuInvertedKey, menuInverted);
+  prefs.end();
+}
+
+constexpr const char *kPrefsNotifyIntervalKey = "bleNotifyM";
+
+void loadNotifyInterval() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  bleNotifyIntervalMin = prefs.getUChar(kPrefsNotifyIntervalKey, BLE_NOTIFY_CHECK_INTERVAL_MIN);
+  prefs.end();
+}
+
+void saveNotifyInterval() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putUChar(kPrefsNotifyIntervalKey, bleNotifyIntervalMin);
+  prefs.end();
+}
+
+constexpr const char *kPrefsInternetAccessKey = "inetMode";
+
+void loadInternetAccessMode() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  internetAccessMode = prefs.getUChar(kPrefsInternetAccessKey, INTERNET_ACCESS_WIFI);
+  prefs.end();
+}
+
+void saveInternetAccessMode() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putUChar(kPrefsInternetAccessKey, internetAccessMode);
+  prefs.end();
+}
+
+constexpr const char *kPrefsNotifyPopupEnabledKey = "notifPopOn";
+constexpr const char *kPrefsNotifyPopupDurationKey = "notifPopS";
+constexpr const char *kPrefsNotifyIconEnabledKey = "notifIconOn";
+constexpr const char *kPrefsNotifyIconLightKey = "notifIconLt";
+
+void loadNotificationSettings() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  notificationPopupEnabled   = prefs.getBool(kPrefsNotifyPopupEnabledKey, true);
+  notificationPopupDurationS = prefs.getUChar(kPrefsNotifyPopupDurationKey, NOTIFICATION_POPUP_DURATION_DEFAULT_S);
+  notificationIconEnabled    = prefs.getBool(kPrefsNotifyIconEnabledKey, true);
+  notificationIconLight      = prefs.getBool(kPrefsNotifyIconLightKey, true);
+  prefs.end();
+}
+
+void saveNotificationSettings() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putBool(kPrefsNotifyPopupEnabledKey, notificationPopupEnabled);
+  prefs.putUChar(kPrefsNotifyPopupDurationKey, notificationPopupDurationS);
+  prefs.putBool(kPrefsNotifyIconEnabledKey, notificationIconEnabled);
+  prefs.putBool(kPrefsNotifyIconLightKey, notificationIconLight);
+  prefs.end();
+}
+
 constexpr const char *kPrefsLanguageKey = "uiLang";
 
 void loadLanguage() {
@@ -285,51 +470,173 @@ const char *fontSizeName(uint8_t size) {
   }
 }
 
-// Scoped to just the top-level menu and Settings list (see config.h) - the
-// built-in classic GFX font (nullptr) is genuinely smaller than any bundled
-// FreeMono size, so it stands in for "Small" rather than trying to find/ship
-// a smaller mono font.
+// Shifted up one notch on Jan's request (12.08.2026): the old built-in
+// classic GFX font ("Small", nullptr - genuinely tiny on a 200px display,
+// and has no Latin-1 glyphs for umlauts either) is gone entirely. What used
+// to be "Default" (9pt) is now the bottom tier "Small", what used to be
+// "Big" (12pt) is now the middle tier "Default", and a new, larger 15pt
+// tier takes over as "Big" - see PicoWatch::showFontSizeSettings() and
+// FreeMonoBold15pt8b.h. UI_FONT_SIZE_SMALL/DEFAULT/BIG (config.h) keep
+// their old names/values (0/1/2, still just an NVS-persisted ordinal) even
+// though what each now points to shifted - only the three functions below
+// (plus the picker's own preview font, showFontSizeSettings()) needed to
+// change.
 const GFXfont *uiMenuFont() {
   switch (uiFontSize) {
-  case UI_FONT_SIZE_SMALL: return nullptr;
-  case UI_FONT_SIZE_BIG: return &FreeMonoBold12pt7b;
-  default: return &FreeMonoBold9pt7b;
+  case UI_FONT_SIZE_SMALL: return &FreeMonoBold9pt8b;
+  case UI_FONT_SIZE_BIG: return &FreeMonoBold15pt8b;
+  default: return &FreeMonoBold12pt8b;
   }
 }
 
-// Row spacing and highlight-box padding tuned per size - chosen so 6 rows
-// (MENU_LENGTH, the fixed top-level menu) always fit within the 200px
-// display regardless of size (16*6=96, 25*6=150, 32*6=192).
+// Settings -> "Invert Menu" (menuInverted), factored out of uiRenderList()
+// (which has used this exact swap since Invert Menu shipped) so every
+// Settings submenu/detail screen (setAlarm(), showVibrateWindowSettings(),
+// setTime(), etc.) can honor it too instead of hardcoding GxEPD_BLACK/
+// WHITE - Jan wanted these consistent with the list menus (15.08.2026).
+// Deliberately NOT used by showInvertMenuSettings()/showFontSizeSettings()
+// themselves - those preview the CANDIDATE choice via their own local
+// variables before it's committed, see their own comments.
+uint16_t uiBgColor() { return menuInverted ? GxEPD_WHITE : GxEPD_BLACK; }
+uint16_t uiFgColor() { return menuInverted ? GxEPD_BLACK : GxEPD_WHITE; }
+
+// Row spacing and highlight-box padding tuned per size - the generic
+// scroll/truncation machinery below (uiListVisibleRows() etc.) means rows
+// no longer have to add up to fit DISPLAY_HEIGHT unscrolled, so these are
+// just "looks right for this font" values, not a fit constraint anymore.
 int uiMenuRowHeight() {
   switch (uiFontSize) {
-  case UI_FONT_SIZE_SMALL: return 16;
-  case UI_FONT_SIZE_BIG: return 32;
-  default: return MENU_HEIGHT;
+  case UI_FONT_SIZE_SMALL: return MENU_HEIGHT;
+  case UI_FONT_SIZE_BIG: return 40;
+  default: return 32;
   }
 }
 
-// How many Settings-list rows fit edge-to-edge in DISPLAY_HEIGHT at the
-// current row height, capped at the list's actual length (no point
-// reserving scroll space that will never be used). Previously a fixed
-// SETTINGS_MENU_VISIBLE_ROWS=6 left a visibly empty black bar at the
-// bottom with the Default row height (6*25=150 of 200px) - computing this
-// fills the screen instead.
-int uiSettingsVisibleRows() {
+// How many rows of a `total`-item list fit edge-to-edge in DISPLAY_HEIGHT
+// at the current row height, capped at the list's actual length (no point
+// reserving scroll space that will never be used). Shared by every list
+// screen (main menu, Settings, Games, Time, Debug) via uiRenderList() below
+// - previously only the Settings list scrolled, so any other list long
+// enough (or a big enough font) to exceed DISPLAY_HEIGHT just silently ran
+// its last row(s) off the bottom of the screen (e.g. the 7-item main menu
+// at the "Big" font size, 7*32=224 > 200).
+int uiListVisibleRows(int total) {
   const int rows = DISPLAY_HEIGHT / uiMenuRowHeight();
-  return min(rows, (int)SETTINGS_MENU_LENGTH);
+  return min(rows, total);
 }
 
-// Fixed regardless of font size - the icon itself stays 12x12 at every
-// size, only the surrounding row height/font changes.
-constexpr int16_t kMenuIconX = 2;
-constexpr int16_t kMenuIconTextX = 18;
+// Keeps the current selection centered where possible and clamped at the
+// top/bottom of the full list, same idea as the old Settings-only
+// settingsMenuScrollOffset(). Stateless - recomputed fresh from the
+// selected index every render, no separate scroll-position variable to
+// keep in sync.
+int uiListScrollOffset(int index, int total, int visibleRows) {
+  if (total <= visibleRows) return 0;
+  const int maxOffset = total - visibleRows;
+  int offset = index - visibleRows / 2;
+  if (offset < 0) offset = 0;
+  if (offset > maxOffset) offset = maxOffset;
+  return offset;
+}
 
 void uiMenuHighlightPadding(int16_t &yOffset, uint16_t &heightPad) {
   switch (uiFontSize) {
-  case UI_FONT_SIZE_SMALL: yOffset = -3; heightPad = 6; break;
-  case UI_FONT_SIZE_BIG: yOffset = -12; heightPad = 18; break;
-  default: yOffset = -10; heightPad = 15; break;
+  case UI_FONT_SIZE_SMALL: yOffset = -10; heightPad = 15; break;
+  case UI_FONT_SIZE_BIG: yOffset = -15; heightPad = 22; break;
+  default: yOffset = -12; heightPad = 18; break;
   }
+}
+
+// Decodes 2-byte UTF-8 sequences (U+0080-U+07FF, which in practice here
+// only ever means Latin-1 Supplement - German umlauts/ss) into the single
+// Latin-1 byte uiMenuFont()'s extended-range GFXfont (FreeMonoBold9pt8b/
+// 12pt8b, see their header comment) actually indexes glyphs by. Lets the
+// localization tables stay normal, directly-editable UTF-8 source (type
+// "ü" like anywhere else) instead of needing hand-escaped \xFC bytes -
+// Adafruit_GFX has no UTF-8 awareness itself, it treats every byte of a
+// string as one glyph index. Anything outside that 2-byte-sequence shape
+// (plain ASCII, or any other multi-byte UTF-8 this project's strings don't
+// use) passes through unchanged.
+String uiUtf8ToLatin1(const char *text) {
+  String out;
+  const uint8_t *p = (const uint8_t *)text;
+  while (*p) {
+    if ((p[0] & 0xE0) == 0xC0 && p[1] != 0 && (p[1] & 0xC0) == 0x80) {
+      out += (char)(((p[0] & 0x1F) << 6) | (p[1] & 0x3F));
+      p += 2;
+    } else {
+      out += (char)p[0];
+      p += 1;
+    }
+  }
+  return out;
+}
+
+// Chops characters off the end of `text` until it fits within `maxWidth`
+// at the current font, marking the cut with a trailing "." so it reads as
+// deliberately abbreviated rather than silently clipped - a translation, a
+// long device name (weekday + action names, etc.) or just the "Big" font
+// size can otherwise run text off the right edge of the display.
+// getTextBounds() measures the string's tight ink extent, which is
+// consistently narrower than the cursor's actual advance while printing
+// (each glyph's xAdvance includes spacing getTextBounds doesn't draw) - so
+// a naive "does the ink fit?" check lets some strings through that still
+// overflow once printed, at which point Adafruit_GFX's default autowrap
+// wraps the tail onto (and overwrites) the row below. Re-measuring each
+// candidate WITH the trailing "." (not just the bare truncated text)
+// keeps the truncation itself honest against that same discrepancy.
+String uiTruncateToWidth(const char *text, uint16_t maxWidth) {
+  String s = uiUtf8ToLatin1(text);
+  int16_t x1, y1;
+  uint16_t width, h;
+  PicoWatch::display.getTextBounds(s, 0, 0, &x1, &y1, &width, &h);
+  if (width <= maxWidth) return s;
+  while (s.length() > 1) {
+    s.remove(s.length() - 1);
+    const String candidate = s + ".";
+    PicoWatch::display.getTextBounds(candidate, 0, 0, &x1, &y1, &width, &h);
+    if (width <= maxWidth) return candidate;
+  }
+  return s;
+}
+
+// Word-wraps `text` to fit within maxWidth at the current font, breaking
+// only at spaces - unlike Adafruit_GFX's own setTextWrap(true) autowrap,
+// which just counts characters and breaks wherever the row runs out,
+// splitting words in half mid-word (Jan, 15.08.2026: "Back to disconnect"
+// wrapped as "Back to disconn" / "ect"). Returns the text with '\n'
+// inserted at the chosen break points - print()/println() honor an
+// embedded '\n' directly (advance to the next line) regardless of
+// setTextWrap()'s own setting, so the caller doesn't need wrap on at all
+// once text has been run through this. A single word wider than maxWidth
+// on its own is left alone (nothing sensible to do without actually
+// splitting the word) rather than looping forever trying to shrink it.
+String uiWrapWords(const char *text, uint16_t maxWidth) {
+  const String s = uiUtf8ToLatin1(text);
+  String out, line;
+  int16_t x1, y1;
+  uint16_t width, h;
+  int wordStart = 0;
+  for (int i = 0; i <= (int)s.length(); i++) {
+    if (i != (int)s.length() && s[i] != ' ') continue;
+    const String word = s.substring(wordStart, i);
+    wordStart = i + 1;
+    if (word.length() == 0) continue;
+    const String candidate = line.length() == 0 ? word : line + " " + word;
+    PicoWatch::display.getTextBounds(candidate, 0, 0, &x1, &y1, &width, &h);
+    if (width <= maxWidth || line.length() == 0) {
+      line = candidate;
+    } else {
+      if (out.length() > 0) out += '\n';
+      out += line;
+      line = word;
+    }
+  }
+  if (line.length() > 0) {
+    if (out.length() > 0) out += '\n';
+    out += line;
+  }
+  return out;
 }
 
 constexpr const char *kPrefsCityIdKey = "cityId";
@@ -351,6 +658,24 @@ void saveWeatherCityID(const char *cityID) {
   Preferences prefs;
   prefs.begin(kPrefsNamespace, false);  // read-write
   prefs.putString(kPrefsCityIdKey, cityID);
+  prefs.end();
+}
+
+constexpr const char *kPrefsHostnameKey = "hostname";
+
+void loadHostname() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  const String saved = prefs.getString(kPrefsHostnameKey, "");
+  prefs.end();
+  strncpy(picoWatchHostname, saved.c_str(), sizeof(picoWatchHostname) - 1);
+  picoWatchHostname[sizeof(picoWatchHostname) - 1] = '\0';
+}
+
+void saveHostname(const char *hostname) {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putString(kPrefsHostnameKey, hostname);
   prefs.end();
 }
 
@@ -391,6 +716,14 @@ RTC_DATA_ATTR int menuIndex;
 RTC_DATA_ATTR int settingsMenuIndex;
 RTC_DATA_ATTR int gamesMenuIndex;
 RTC_DATA_ATTR int timeMenuIndex;
+RTC_DATA_ATTR int debugMenuIndex;
+// See kPrefsStepsBaselineKey's comment above (PicoWatch::todaySteps()) -
+// stepsBaseline is loaded from NVS once per true reset (onReset()) and
+// stays fixed for the rest of that boot session; lastSavedStepsTotal just
+// tracks what's currently written to NVS so _persistStepsProgress() can
+// skip the write when nothing changed since the last minute tick.
+RTC_DATA_ATTR uint32_t stepsBaseline;
+RTC_DATA_ATTR uint32_t lastSavedStepsTotal;
 RTC_DATA_ATTR BMA423 sensor;
 RTC_DATA_ATTR bool WIFI_CONFIGURED;
 RTC_DATA_ATTR bool BLE_CONFIGURED;
@@ -431,9 +764,17 @@ void PicoWatch::init(String datetime) {
         // The RTC wakes us up once per minute
         vibMotor(75, 4);
       }
-      _captureStepsAtMidnight();
+      _captureStepsAtMidnight(); // must run first - resets stepsBaseline/lastSavedStepsTotal to 0 at midnight
+      _persistStepsProgress();
       if (alarmEnabled && currentTime.Hour == alarmHour && currentTime.Minute == alarmMinute) {
         vibMotor(150, 10); // longer/more pulses than the o'clock vibration, so it's distinguishable
+      }
+      _checkBleNotifications();
+      // notificationPopupEnabled only gates the popup itself (vibration +
+      // full-screen overlay) - hasUnreadNotification stays set either way,
+      // so the watchface icon (if that's enabled) still shows.
+      if (notificationPopupEnabled && hasUnreadNotification) {
+        _showNotificationPopup(); // vibrates + redraws the watchface itself once dismissed
       }
       break;
     case MAIN_MENU_STATE:
@@ -475,9 +816,22 @@ void PicoWatch::init(String datetime) {
     loadAlarm();
     loadVibrateWindow(settings.vibrateOClock);
     loadWeatherCityID(settings.cityID);
+    loadHostname();
     loadButtonSettings();
     loadFontSize();
+    loadMenuInverted();
+    loadNotifyInterval();
+    loadInternetAccessMode();
+    loadNotificationSettings();
+    loadNotifications();
     loadLanguage();
+    // _bmaConfig() above just soft-reset the sensor's own step counter to
+    // 0 (see kPrefsStepsBaselineKey's comment) - restore whatever was last
+    // persisted as "today's steps so far" as the new baseline, so
+    // todaySteps() picks up close to where it left off instead of
+    // silently dropping back to 0 on every reset/reflash.
+    stepsBaseline = loadStepsBaseline();
+    lastSavedStepsTotal = stepsBaseline;
     generateWifiApPassword();
     RTC.read(currentTime);
     RTC.read(bootTime);
@@ -577,9 +931,12 @@ void dispatchTopMenu(PicoWatch *w, int index) {
     w->showWeatherForecast();
     break;
   case 5:
-    w->showGamesMenu(gamesMenuIndex, false);
+    w->showNotifications();
     break;
   case 6:
+    w->showGamesMenu(gamesMenuIndex, false);
+    break;
+  case 7:
     w->showSettingsMenu(settingsMenuIndex, false);
     break;
   default:
@@ -606,22 +963,45 @@ void dispatchGamesMenu(PicoWatch *w, int index) {
   }
 }
 
+// Wraps `idx` by one step within [0, length) - the Up(-1)/Down(+1)
+// index-cycling arithmetic repeated for every guiState in BOTH
+// handleButtonPress()'s single-press path and its fast-menu polling loop
+// (MAIN_MENU_STATE, SETTINGS_MENU_STATE, GAMES_MENU_STATE, TIME_MENU_STATE,
+// DEBUG_MENU_STATE x Up/Down x 2 call sites = 20 places). Deliberately
+// factors out ONLY this pure arithmetic, not the surrounding control flow
+// (which guiState maps to which action, the WATCHFACE_STATE special
+// cases, loop-break placement) - that control flow differs on purpose
+// between the two paths and is exactly what caused the 31.07.2026
+// fast-menu regression (commit 157914b) when it was last touched; see
+// project memory, 14.08.2026 for why a full merge of the two paths was
+// deliberately scoped down to just this safe piece.
+int menuIndexCycle(int idx, bool up, int length) {
+  if (up) {
+    idx--;
+    if (idx < 0) idx = length - 1;
+  } else {
+    idx++;
+    if (idx > length - 1) idx = 0;
+  }
+  return idx;
+}
+
 void dispatchSettingsMenu(PicoWatch *w, int index) {
   switch (index) {
   case 0:
     w->showAbout();
     break;
   case 1:
-    w->showBuzz();
-    break;
-  case 2:
-    w->showAccelerometer();
-    break;
-  case 3:
     w->showTimeMenu(timeMenuIndex, false);
     break;
-  case 4:
+  case 2:
     w->setupWifi();
+    break;
+  case 3:
+    w->showInternetAccessSettings();
+    break;
+  case 4:
+    w->showNotificationSettings();
     break;
   case 5:
     w->setWeatherCity();
@@ -636,7 +1016,13 @@ void dispatchSettingsMenu(PicoWatch *w, int index) {
     w->showFontSizeSettings();
     break;
   case 9:
+    w->showInvertMenuSettings();
+    break;
+  case 10:
     w->showLanguageSettings();
+    break;
+  case 11:
+    w->showDebugMenu(debugMenuIndex, false);
     break;
   default:
     break;
@@ -656,6 +1042,22 @@ void dispatchTimeMenu(PicoWatch *w, int index) {
     break;
   case 3:
     w->showVibrateWindowSettings();
+    break;
+  case 4:
+    w->showNotifyIntervalSettings();
+    break;
+  default:
+    break;
+  }
+}
+
+void dispatchDebugMenu(PicoWatch *w, int index) {
+  switch (index) {
+  case 0:
+    w->showBuzz();
+    break;
+  case 1:
+    w->showAccelerometer();
     break;
   default:
     break;
@@ -707,11 +1109,11 @@ void PicoWatch::handleButtonPress() {
       dispatchTopMenu(this, menuIndex);
       // changeWatchface() (case 0) may go straight back to WATCHFACE_STATE
       // instead of the usual MAIN_MENU_STATE - the fast-menu loop below only
-      // handles MAIN_MENU_STATE/APP_STATE/FW_UPDATE_STATE/
-      // SETTINGS_MENU_STATE, so falling through into it while already on
-      // WATCHFACE_STATE would leave the watch appearing frozen (ignoring all
-      // button input) for up to 5 seconds. Return immediately in that case,
-      // same as the "Back while already on WATCHFACE_STATE" case below.
+      // handles MAIN_MENU_STATE/APP_STATE/SETTINGS_MENU_STATE, so falling
+      // through into it while already on WATCHFACE_STATE would leave the
+      // watch appearing frozen (ignoring all button input) for up to 5
+      // seconds. Return immediately in that case, same as the "Back while
+      // already on WATCHFACE_STATE" case below.
       if (guiState == WATCHFACE_STATE) return;
     } else if (guiState == SETTINGS_MENU_STATE) { // select settings submenu item
       dispatchSettingsMenu(this, settingsMenuIndex);
@@ -719,9 +1121,9 @@ void PicoWatch::handleButtonPress() {
       dispatchGamesMenu(this, gamesMenuIndex);
     } else if (guiState == TIME_MENU_STATE) { // select time submenu item
       dispatchTimeMenu(this, timeMenuIndex);
-    } /*else if (guiState == FW_UPDATE_STATE) {
-      updateFWBegin();
-    }*/
+    } else if (guiState == DEBUG_MENU_STATE) { // select debug submenu item
+      dispatchDebugMenu(this, debugMenuIndex);
+    }
   }
   // Back Button
   else if (wakeupBit & logicalBackMask) {
@@ -734,10 +1136,10 @@ void PicoWatch::handleButtonPress() {
       showMenu(menuIndex, false);
     } else if (guiState == TIME_MENU_STATE) { // exit to settings menu if already in time
       showSettingsMenu(settingsMenuIndex, false);
+    } else if (guiState == DEBUG_MENU_STATE) { // exit to settings menu if already in debug
+      showSettingsMenu(settingsMenuIndex, false);
     } else if (guiState == APP_STATE) {
       showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in a settings app
-    } else if (guiState == FW_UPDATE_STATE) {
-      showSettingsMenu(settingsMenuIndex, false);
     } else if (guiState == WATCHFACE_STATE) {
       return;
     }
@@ -745,29 +1147,20 @@ void PicoWatch::handleButtonPress() {
   // Up Button
   else if (wakeupBit & UP_BTN_MASK) {
     if (guiState == MAIN_MENU_STATE) { // increment menu index
-      menuIndex--;
-      if (menuIndex < 0) {
-        menuIndex = MENU_LENGTH - 1;
-      }
+      menuIndex = menuIndexCycle(menuIndex, true, MENU_LENGTH);
       showMenu(menuIndex, true);
     } else if (guiState == SETTINGS_MENU_STATE) { // increment settings menu index
-      settingsMenuIndex--;
-      if (settingsMenuIndex < 0) {
-        settingsMenuIndex = SETTINGS_MENU_LENGTH - 1;
-      }
+      settingsMenuIndex = menuIndexCycle(settingsMenuIndex, true, SETTINGS_MENU_LENGTH);
       showSettingsMenu(settingsMenuIndex, true);
     } else if (guiState == GAMES_MENU_STATE) { // increment games menu index
-      gamesMenuIndex--;
-      if (gamesMenuIndex < 0) {
-        gamesMenuIndex = GAMES_MENU_LENGTH - 1;
-      }
+      gamesMenuIndex = menuIndexCycle(gamesMenuIndex, true, GAMES_MENU_LENGTH);
       showGamesMenu(gamesMenuIndex, true);
     } else if (guiState == TIME_MENU_STATE) { // increment time menu index
-      timeMenuIndex--;
-      if (timeMenuIndex < 0) {
-        timeMenuIndex = TIME_MENU_LENGTH - 1;
-      }
+      timeMenuIndex = menuIndexCycle(timeMenuIndex, true, TIME_MENU_LENGTH);
       showTimeMenu(timeMenuIndex, true);
+    } else if (guiState == DEBUG_MENU_STATE) { // increment debug menu index
+      debugMenuIndex = menuIndexCycle(debugMenuIndex, true, DEBUG_MENU_LENGTH);
+      showDebugMenu(debugMenuIndex, true);
     } else if (guiState == WATCHFACE_STATE) {
       // User-assignable short/long press action (see showButtonSettings()).
       // Measure how long the button that just woke us stays held, then
@@ -785,29 +1178,20 @@ void PicoWatch::handleButtonPress() {
   // Down Button
   else if (wakeupBit & DOWN_BTN_MASK) {
     if (guiState == MAIN_MENU_STATE) { // decrement menu index
-      menuIndex++;
-      if (menuIndex > MENU_LENGTH - 1) {
-        menuIndex = 0;
-      }
+      menuIndex = menuIndexCycle(menuIndex, false, MENU_LENGTH);
       showMenu(menuIndex, true);
     } else if (guiState == SETTINGS_MENU_STATE) { // decrement settings menu index
-      settingsMenuIndex++;
-      if (settingsMenuIndex > SETTINGS_MENU_LENGTH - 1) {
-        settingsMenuIndex = 0;
-      }
+      settingsMenuIndex = menuIndexCycle(settingsMenuIndex, false, SETTINGS_MENU_LENGTH);
       showSettingsMenu(settingsMenuIndex, true);
     } else if (guiState == GAMES_MENU_STATE) { // decrement games menu index
-      gamesMenuIndex++;
-      if (gamesMenuIndex > GAMES_MENU_LENGTH - 1) {
-        gamesMenuIndex = 0;
-      }
+      gamesMenuIndex = menuIndexCycle(gamesMenuIndex, false, GAMES_MENU_LENGTH);
       showGamesMenu(gamesMenuIndex, true);
     } else if (guiState == TIME_MENU_STATE) { // decrement time menu index
-      timeMenuIndex++;
-      if (timeMenuIndex > TIME_MENU_LENGTH - 1) {
-        timeMenuIndex = 0;
-      }
+      timeMenuIndex = menuIndexCycle(timeMenuIndex, false, TIME_MENU_LENGTH);
       showTimeMenu(timeMenuIndex, true);
+    } else if (guiState == DEBUG_MENU_STATE) { // decrement debug menu index
+      debugMenuIndex = menuIndexCycle(debugMenuIndex, false, DEBUG_MENU_LENGTH);
+      showDebugMenu(debugMenuIndex, true);
     } else if (guiState == WATCHFACE_STATE) {
       // See the identical Up-button case just above for why this measures
       // press duration instead of returning immediately.
@@ -843,9 +1227,9 @@ void PicoWatch::handleButtonPress() {
           dispatchGamesMenu(this, gamesMenuIndex);
         } else if (guiState == TIME_MENU_STATE) {
           dispatchTimeMenu(this, timeMenuIndex);
-        } /*else if (guiState == FW_UPDATE_STATE) {
-          updateFWBegin();
-        }*/
+        } else if (guiState == DEBUG_MENU_STATE) {
+          dispatchDebugMenu(this, debugMenuIndex);
+        }
       } else if (digitalRead(logicalBackPin) == ACTIVE_LOW) {
         lastTimeout = millis();
         if (guiState ==
@@ -859,416 +1243,207 @@ void PicoWatch::handleButtonPress() {
           showMenu(menuIndex, false); // exit to top menu if already in games
         } else if (guiState == TIME_MENU_STATE) {
           showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in time
+        } else if (guiState == DEBUG_MENU_STATE) {
+          showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in debug
         } else if (guiState == APP_STATE) {
           showSettingsMenu(settingsMenuIndex, false); // exit to settings menu if already in a settings app
-        } else if (guiState == FW_UPDATE_STATE) {
-          showSettingsMenu(settingsMenuIndex, false);
         }
       } else if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
         lastTimeout = millis();
         if (guiState == MAIN_MENU_STATE) { // increment menu index
-          menuIndex--;
-          if (menuIndex < 0) {
-            menuIndex = MENU_LENGTH - 1;
-          }
+          menuIndex = menuIndexCycle(menuIndex, true, MENU_LENGTH);
           showFastMenu(menuIndex);
         } else if (guiState == SETTINGS_MENU_STATE) {
-          settingsMenuIndex--;
-          if (settingsMenuIndex < 0) {
-            settingsMenuIndex = SETTINGS_MENU_LENGTH - 1;
-          }
+          settingsMenuIndex = menuIndexCycle(settingsMenuIndex, true, SETTINGS_MENU_LENGTH);
           showFastSettingsMenu(settingsMenuIndex);
         } else if (guiState == GAMES_MENU_STATE) {
-          gamesMenuIndex--;
-          if (gamesMenuIndex < 0) {
-            gamesMenuIndex = GAMES_MENU_LENGTH - 1;
-          }
+          gamesMenuIndex = menuIndexCycle(gamesMenuIndex, true, GAMES_MENU_LENGTH);
           showFastGamesMenu(gamesMenuIndex);
         } else if (guiState == TIME_MENU_STATE) {
-          timeMenuIndex--;
-          if (timeMenuIndex < 0) {
-            timeMenuIndex = TIME_MENU_LENGTH - 1;
-          }
+          timeMenuIndex = menuIndexCycle(timeMenuIndex, true, TIME_MENU_LENGTH);
           showFastTimeMenu(timeMenuIndex);
+        } else if (guiState == DEBUG_MENU_STATE) {
+          debugMenuIndex = menuIndexCycle(debugMenuIndex, true, DEBUG_MENU_LENGTH);
+          showFastDebugMenu(debugMenuIndex);
         }
       } else if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
         lastTimeout = millis();
         if (guiState == MAIN_MENU_STATE) { // decrement menu index
-          menuIndex++;
-          if (menuIndex > MENU_LENGTH - 1) {
-            menuIndex = 0;
-          }
+          menuIndex = menuIndexCycle(menuIndex, false, MENU_LENGTH);
           showFastMenu(menuIndex);
         } else if (guiState == SETTINGS_MENU_STATE) {
-          settingsMenuIndex++;
-          if (settingsMenuIndex > SETTINGS_MENU_LENGTH - 1) {
-            settingsMenuIndex = 0;
-          }
+          settingsMenuIndex = menuIndexCycle(settingsMenuIndex, false, SETTINGS_MENU_LENGTH);
           showFastSettingsMenu(settingsMenuIndex);
         } else if (guiState == GAMES_MENU_STATE) {
-          gamesMenuIndex++;
-          if (gamesMenuIndex > GAMES_MENU_LENGTH - 1) {
-            gamesMenuIndex = 0;
-          }
+          gamesMenuIndex = menuIndexCycle(gamesMenuIndex, false, GAMES_MENU_LENGTH);
           showFastGamesMenu(gamesMenuIndex);
         } else if (guiState == TIME_MENU_STATE) {
-          timeMenuIndex++;
-          if (timeMenuIndex > TIME_MENU_LENGTH - 1) {
-            timeMenuIndex = 0;
-          }
+          timeMenuIndex = menuIndexCycle(timeMenuIndex, false, TIME_MENU_LENGTH);
           showFastTimeMenu(timeMenuIndex);
+        } else if (guiState == DEBUG_MENU_STATE) {
+          debugMenuIndex = menuIndexCycle(debugMenuIndex, false, DEBUG_MENU_LENGTH);
+          showFastDebugMenu(debugMenuIndex);
         }
       }
     }
   }
 }
 
-void PicoWatch::showMenu(byte menuIndex, bool partialRefresh) {
+// Shared body behind every show*Menu()/showFast*Menu() pair (main menu,
+// Settings, Games, Time, Debug) - draws a scrollable, width-truncated list
+// of `total` items with `selectedIndex` highlighted, in the current
+// Settings -> Font Size choice. Doesn't touch guiState/alreadyInMenu;
+// callers set those themselves same as before, since the Fast variants
+// intentionally don't reset alreadyInMenu. Protected (not a free function)
+// so subclasses with their own list-style pickers can use it too, and
+// automatically stay in sync with the font-size setting - see
+// MultiFacePicoWatch::changeWatchface(), which used to hardcode its own
+// font/spacing and silently ignore Font Size entirely.
+void PicoWatch::uiRenderList(const char *const *items, int total, int selectedIndex,
+                              bool partialRefresh) {
+  // Settings -> "Invert Menu" (menuInverted) swaps this whole scheme:
+  // normally white-on-black with a white highlight bar/black selected text,
+  // inverted flips every one of those four colors. uiBgColor()/uiFgColor()
+  // are this exact swap, factored out so other Settings screens can use it.
+  const uint16_t bgColor = uiBgColor();
+  const uint16_t fgColor = uiFgColor();
+  const uint16_t highlightColor = fgColor;
+  const uint16_t selectedTextColor = bgColor;
+
   display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
+  display.fillScreen(bgColor);
   display.setFont(uiMenuFont());
+  // Belt-and-suspenders against uiTruncateToWidth() ever being wrong by a
+  // few pixels: with wrap left at Adafruit_GFX's default (on), an
+  // overflowing string wraps its tail onto the row below and overwrites
+  // it - with wrap off, worst case is a few clipped pixels at the very
+  // right edge, never a corrupted neighboring row.
+  display.setTextWrap(false);
 
   int16_t x1, y1;
-  uint16_t w, h;
+  uint16_t width, h;
   int16_t yPos;
   const int rowHeight = uiMenuRowHeight();
   int16_t highlightYOffset;
   uint16_t highlightHeightPad;
   uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
 
-  const char *menuItems[] = {PW_MENU_CHANGE_WATCHFACE, PW_MENU_STOPWATCH, PW_MENU_STEPS,
-                             PW_MENU_ALARM,             PW_MENU_WEATHER,   PW_MENU_GAMES,
-                             PW_MENU_SETTINGS};
-  const uint8_t *const menuIcons[] = {iconWatchface, iconStopwatch, iconSteps,
-                                      iconAlarm,      iconWeather,   iconGames,
-                                      iconSettings};
-  for (int i = 0; i < MENU_LENGTH; i++) {
-    yPos = rowHeight + (rowHeight * i);
-    display.setCursor(kMenuIconTextX, yPos);
-    display.getTextBounds(menuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
+  // A few px of slack below the physical display width - see
+  // uiTruncateToWidth()'s comment on why the ink-extent measurement it
+  // uses can still under-count the real printed advance width.
+  constexpr uint16_t kMaxLabelWidth = DISPLAY_WIDTH - 8;
+
+  const int visibleRows = uiListVisibleRows(total);
+  const int scrollOffset = uiListScrollOffset(selectedIndex, total, visibleRows);
+  const int visibleCount = min(visibleRows, total - scrollOffset);
+  for (int row = 0; row < visibleCount; row++) {
+    const int i = scrollOffset + row;
+    yPos = rowHeight + (rowHeight * row);
+    const String label = uiTruncateToWidth(items[i], kMaxLabelWidth);
+    display.setCursor(0, yPos);
+    display.getTextBounds(label, 0, yPos, &x1, &y1, &width, &h);
     uint16_t color;
-    if (i == menuIndex) {
-      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
-      color = GxEPD_BLACK;
+    if (i == selectedIndex) {
+      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, highlightColor);
+      color = selectedTextColor;
     } else {
-      color = GxEPD_WHITE;
+      color = fgColor;
     }
     display.setTextColor(color);
-    display.println(menuItems[i]);
-    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, menuIcons[i],
-                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
+    display.println(label);
   }
 
   display.display(partialRefresh);
+}
 
+void PicoWatch::showMenu(byte menuIndex, bool partialRefresh) {
+  const char *const kItems[] = {PW_MENU_CHANGE_WATCHFACE, PW_MENU_STOPWATCH,       PW_MENU_STEPS,
+                                 PW_MENU_ALARM,            PW_MENU_WEATHER,        PW_MENU_NOTIFICATIONS,
+                                 PW_MENU_GAMES,            PW_MENU_SETTINGS};
+  uiRenderList(kItems, MENU_LENGTH, menuIndex, partialRefresh);
   guiState = MAIN_MENU_STATE;
   alreadyInMenu = false;
 }
 
 void PicoWatch::showFastMenu(byte menuIndex) {
-  display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(uiMenuFont());
-
-  int16_t x1, y1;
-  uint16_t w, h;
-  int16_t yPos;
-  const int rowHeight = uiMenuRowHeight();
-  int16_t highlightYOffset;
-  uint16_t highlightHeightPad;
-  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
-
-  const char *menuItems[] = {PW_MENU_CHANGE_WATCHFACE, PW_MENU_STOPWATCH, PW_MENU_STEPS,
-                             PW_MENU_ALARM,             PW_MENU_WEATHER,   PW_MENU_GAMES,
-                             PW_MENU_SETTINGS};
-  const uint8_t *const menuIcons[] = {iconWatchface, iconStopwatch, iconSteps,
-                                      iconAlarm,      iconWeather,   iconGames,
-                                      iconSettings};
-  for (int i = 0; i < MENU_LENGTH; i++) {
-    yPos = rowHeight + (rowHeight * i);
-    display.setCursor(kMenuIconTextX, yPos);
-    display.getTextBounds(menuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
-    uint16_t color;
-    if (i == menuIndex) {
-      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
-      color = GxEPD_BLACK;
-    } else {
-      color = GxEPD_WHITE;
-    }
-    display.setTextColor(color);
-    display.println(menuItems[i]);
-    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, menuIcons[i],
-                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
-  }
-
-  display.display(true);
-
+  const char *const kItems[] = {PW_MENU_CHANGE_WATCHFACE, PW_MENU_STOPWATCH,       PW_MENU_STEPS,
+                                 PW_MENU_ALARM,            PW_MENU_WEATHER,        PW_MENU_NOTIFICATIONS,
+                                 PW_MENU_GAMES,            PW_MENU_SETTINGS};
+  uiRenderList(kItems, MENU_LENGTH, menuIndex, true);
   guiState = MAIN_MENU_STATE;
 }
 
-namespace {
-// Set Time/Sync NTP/Set Timezone used to be separate entries here - now
-// grouped under the single "Time" entry (see kTimeMenuItems below) to keep
-// this top-level list shorter.
-const char *const kSettingsMenuItems[] = {
-    PW_SETTINGS_ABOUT,  PW_SETTINGS_VIBRATE, PW_SETTINGS_ACCELEROMETER,
-    PW_SETTINGS_TIME,   PW_SETTINGS_SETUP_WIFI, /*"Update Firmware",*/
-    PW_SETTINGS_SET_CITY,
-    PW_SETTINGS_UPDATE_GITHUB, PW_SETTINGS_BUTTON_SETTINGS, PW_SETTINGS_FONT_SIZE,
-    PW_SETTINGS_LANGUAGE};
-const uint8_t *const kSettingsMenuIcons[] = {
-    iconAbout,  iconVibrate, iconAccel,
-    iconTime,   iconWifi,
-    iconCity,
-    iconUpdate, iconButtons, iconFontSize, iconLanguage};
-
-const char *const kTimeMenuItems[] = {PW_SETTINGS_SET_TIME, PW_SETTINGS_SYNC_NTP,
-                                       PW_SETTINGS_SET_TIMEZONE, PW_TIME_VIBRATE_WINDOW};
-const uint8_t *const kTimeMenuIcons[] = {iconTime, iconSync, iconTimezone, iconVibrate};
-
-// Fitting all SETTINGS_MENU_LENGTH items on screen at once made the rows too
-// cramped to read. Instead this shows a scrolling window (sized by
-// uiSettingsVisibleRows(), which fills the display edge-to-edge at the
-// current font size) at comfortable spacing, keeping the current selection
-// centered where possible and clamped at the top/bottom of the full list.
-// Stateless - recomputed fresh from settingsMenuIndex every render, no
-// separate scroll-position variable to keep in sync.
-int settingsMenuScrollOffset(int index, int visibleRows) {
-  if (SETTINGS_MENU_LENGTH <= visibleRows) return 0;
-  const int maxOffset = SETTINGS_MENU_LENGTH - visibleRows;
-  int offset = index - visibleRows / 2;
-  if (offset < 0) offset = 0;
-  if (offset > maxOffset) offset = maxOffset;
-  return offset;
-}
-}  // namespace
-
 void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
-  display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(uiMenuFont());
-
-  int16_t x1, y1;
-  uint16_t w, h;
-  int16_t yPos;
-  const int rowHeight = uiMenuRowHeight();
-  int16_t highlightYOffset;
-  uint16_t highlightHeightPad;
-  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
-
-  const int visibleRows = uiSettingsVisibleRows();
-  const int scrollOffset = settingsMenuScrollOffset(settingsMenuIndex, visibleRows);
-  const int visibleCount = min(visibleRows, (int)SETTINGS_MENU_LENGTH - scrollOffset);
-  for (int row = 0; row < visibleCount; row++) {
-    const int i = scrollOffset + row;
-    yPos = rowHeight + (rowHeight * row);
-    display.setCursor(kMenuIconTextX, yPos);
-    display.getTextBounds(kSettingsMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
-    uint16_t color;
-    if (i == settingsMenuIndex) {
-      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
-      color = GxEPD_BLACK;
-    } else {
-      color = GxEPD_WHITE;
-    }
-    display.setTextColor(color);
-    display.println(kSettingsMenuItems[i]);
-    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kSettingsMenuIcons[i],
-                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
-  }
-
-  display.display(partialRefresh);
-
+  // Vibrate Motor Test/Show Accelerometer used to be separate entries here -
+  // now grouped under the single "Debug" entry (see kDebugMenuItems in
+  // showDebugMenu()) so this top-level list stays shorter. Set Time/Sync
+  // NTP/Set Timezone got the same treatment earlier (see kTimeMenuItems).
+  const char *const kItems[] = {PW_SETTINGS_ABOUT,           PW_SETTINGS_TIME,
+                                 PW_SETTINGS_SETUP_WIFI,      PW_INTERNET_ACCESS_TITLE,
+                                 PW_NOTIF_SETTINGS_TITLE,     PW_SETTINGS_SET_CITY,
+                                 PW_SETTINGS_UPDATE_GITHUB,   PW_SETTINGS_BUTTON_SETTINGS,
+                                 PW_SETTINGS_FONT_SIZE,       PW_SETTINGS_INVERT_MENU,
+                                 PW_SETTINGS_LANGUAGE,        PW_SETTINGS_DEBUG};
+  uiRenderList(kItems, SETTINGS_MENU_LENGTH, settingsMenuIndex, partialRefresh);
   guiState = SETTINGS_MENU_STATE;
   alreadyInMenu = false;
 }
 
 void PicoWatch::showFastSettingsMenu(byte settingsMenuIndex) {
-  display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(uiMenuFont());
-
-  int16_t x1, y1;
-  uint16_t w, h;
-  int16_t yPos;
-  const int rowHeight = uiMenuRowHeight();
-  int16_t highlightYOffset;
-  uint16_t highlightHeightPad;
-  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
-
-  const int visibleRows = uiSettingsVisibleRows();
-  const int scrollOffset = settingsMenuScrollOffset(settingsMenuIndex, visibleRows);
-  const int visibleCount = min(visibleRows, (int)SETTINGS_MENU_LENGTH - scrollOffset);
-  for (int row = 0; row < visibleCount; row++) {
-    const int i = scrollOffset + row;
-    yPos = rowHeight + (rowHeight * row);
-    display.setCursor(kMenuIconTextX, yPos);
-    display.getTextBounds(kSettingsMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
-    uint16_t color;
-    if (i == settingsMenuIndex) {
-      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
-      color = GxEPD_BLACK;
-    } else {
-      color = GxEPD_WHITE;
-    }
-    display.setTextColor(color);
-    display.println(kSettingsMenuItems[i]);
-    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kSettingsMenuIcons[i],
-                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
-  }
-
-  display.display(true);
-
+  const char *const kItems[] = {PW_SETTINGS_ABOUT,           PW_SETTINGS_TIME,
+                                 PW_SETTINGS_SETUP_WIFI,      PW_INTERNET_ACCESS_TITLE,
+                                 PW_NOTIF_SETTINGS_TITLE,     PW_SETTINGS_SET_CITY,
+                                 PW_SETTINGS_UPDATE_GITHUB,   PW_SETTINGS_BUTTON_SETTINGS,
+                                 PW_SETTINGS_FONT_SIZE,       PW_SETTINGS_INVERT_MENU,
+                                 PW_SETTINGS_LANGUAGE,        PW_SETTINGS_DEBUG};
+  uiRenderList(kItems, SETTINGS_MENU_LENGTH, settingsMenuIndex, true);
   guiState = SETTINGS_MENU_STATE;
 }
 
-namespace {
-const char *const kGamesMenuItems[] = {PW_GAME_SNAKE, PW_GAME_PONG, PW_GAME_TETRIS,
-                                        PW_GAME_FLAPPY};
-const uint8_t *const kGamesMenuIcons[] = {iconGameSnake, iconGamePong, iconGameTetris,
-                                           iconGameFlappy};
-}  // namespace
-
 void PicoWatch::showGamesMenu(byte gamesMenuIndex, bool partialRefresh) {
-  display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(uiMenuFont());
-
-  int16_t x1, y1;
-  uint16_t w, h;
-  int16_t yPos;
-  const int rowHeight = uiMenuRowHeight();
-  int16_t highlightYOffset;
-  uint16_t highlightHeightPad;
-  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
-
-  for (int i = 0; i < GAMES_MENU_LENGTH; i++) {
-    yPos = rowHeight + (rowHeight * i);
-    display.setCursor(kMenuIconTextX, yPos);
-    display.getTextBounds(kGamesMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
-    uint16_t color;
-    if (i == gamesMenuIndex) {
-      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
-      color = GxEPD_BLACK;
-    } else {
-      color = GxEPD_WHITE;
-    }
-    display.setTextColor(color);
-    display.println(kGamesMenuItems[i]);
-    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kGamesMenuIcons[i],
-                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
-  }
-
-  display.display(partialRefresh);
-
+  const char *const kItems[] = {PW_GAME_SNAKE, PW_GAME_PONG, PW_GAME_TETRIS, PW_GAME_FLAPPY};
+  uiRenderList(kItems, GAMES_MENU_LENGTH, gamesMenuIndex, partialRefresh);
   guiState = GAMES_MENU_STATE;
   alreadyInMenu = false;
 }
 
 void PicoWatch::showFastGamesMenu(byte gamesMenuIndex) {
-  display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(uiMenuFont());
-
-  int16_t x1, y1;
-  uint16_t w, h;
-  int16_t yPos;
-  const int rowHeight = uiMenuRowHeight();
-  int16_t highlightYOffset;
-  uint16_t highlightHeightPad;
-  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
-
-  for (int i = 0; i < GAMES_MENU_LENGTH; i++) {
-    yPos = rowHeight + (rowHeight * i);
-    display.setCursor(kMenuIconTextX, yPos);
-    display.getTextBounds(kGamesMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
-    uint16_t color;
-    if (i == gamesMenuIndex) {
-      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
-      color = GxEPD_BLACK;
-    } else {
-      color = GxEPD_WHITE;
-    }
-    display.setTextColor(color);
-    display.println(kGamesMenuItems[i]);
-    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kGamesMenuIcons[i],
-                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
-  }
-
-  display.display(true);
-
+  const char *const kItems[] = {PW_GAME_SNAKE, PW_GAME_PONG, PW_GAME_TETRIS, PW_GAME_FLAPPY};
+  uiRenderList(kItems, GAMES_MENU_LENGTH, gamesMenuIndex, true);
   guiState = GAMES_MENU_STATE;
 }
 
 void PicoWatch::showTimeMenu(byte timeMenuIndex, bool partialRefresh) {
-  display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(uiMenuFont());
-
-  int16_t x1, y1;
-  uint16_t w, h;
-  int16_t yPos;
-  const int rowHeight = uiMenuRowHeight();
-  int16_t highlightYOffset;
-  uint16_t highlightHeightPad;
-  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
-
-  for (int i = 0; i < TIME_MENU_LENGTH; i++) {
-    yPos = rowHeight + (rowHeight * i);
-    display.setCursor(kMenuIconTextX, yPos);
-    display.getTextBounds(kTimeMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
-    uint16_t color;
-    if (i == timeMenuIndex) {
-      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
-      color = GxEPD_BLACK;
-    } else {
-      color = GxEPD_WHITE;
-    }
-    display.setTextColor(color);
-    display.println(kTimeMenuItems[i]);
-    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kTimeMenuIcons[i],
-                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
-  }
-
-  display.display(partialRefresh);
-
+  const char *const kItems[] = {PW_SETTINGS_SET_TIME, PW_SETTINGS_SYNC_NTP,
+                                 PW_SETTINGS_SET_TIMEZONE, PW_TIME_VIBRATE_WINDOW,
+                                 PW_TIME_NOTIFY_INTERVAL};
+  uiRenderList(kItems, TIME_MENU_LENGTH, timeMenuIndex, partialRefresh);
   guiState = TIME_MENU_STATE;
   alreadyInMenu = false;
 }
 
 void PicoWatch::showFastTimeMenu(byte timeMenuIndex) {
-  display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(uiMenuFont());
-
-  int16_t x1, y1;
-  uint16_t w, h;
-  int16_t yPos;
-  const int rowHeight = uiMenuRowHeight();
-  int16_t highlightYOffset;
-  uint16_t highlightHeightPad;
-  uiMenuHighlightPadding(highlightYOffset, highlightHeightPad);
-
-  for (int i = 0; i < TIME_MENU_LENGTH; i++) {
-    yPos = rowHeight + (rowHeight * i);
-    display.setCursor(kMenuIconTextX, yPos);
-    display.getTextBounds(kTimeMenuItems[i], kMenuIconTextX, yPos, &x1, &y1, &w, &h);
-    uint16_t color;
-    if (i == timeMenuIndex) {
-      display.fillRect(0, y1 + highlightYOffset, DISPLAY_WIDTH, h + highlightHeightPad, GxEPD_WHITE);
-      color = GxEPD_BLACK;
-    } else {
-      color = GxEPD_WHITE;
-    }
-    display.setTextColor(color);
-    display.println(kTimeMenuItems[i]);
-    display.drawBitmap(kMenuIconX, y1 + ((int16_t)h - MENU_ICON_HEIGHT) / 2, kTimeMenuIcons[i],
-                        MENU_ICON_WIDTH, MENU_ICON_HEIGHT, color);
-  }
-
-  display.display(true);
-
+  const char *const kItems[] = {PW_SETTINGS_SET_TIME, PW_SETTINGS_SYNC_NTP,
+                                 PW_SETTINGS_SET_TIMEZONE, PW_TIME_VIBRATE_WINDOW,
+                                 PW_TIME_NOTIFY_INTERVAL};
+  uiRenderList(kItems, TIME_MENU_LENGTH, timeMenuIndex, true);
   guiState = TIME_MENU_STATE;
+}
+
+// Debug submenu (Vibrate Motor Test/Show Accelerometer) - reached via
+// Settings' "Debug" entry, same list-rendering pattern as the other
+// submenus but for DEBUG_MENU_LENGTH items and DEBUG_MENU_STATE.
+void PicoWatch::showDebugMenu(byte debugMenuIndex, bool partialRefresh) {
+  const char *const kItems[] = {PW_SETTINGS_VIBRATE, PW_SETTINGS_ACCELEROMETER};
+  uiRenderList(kItems, DEBUG_MENU_LENGTH, debugMenuIndex, partialRefresh);
+  guiState = DEBUG_MENU_STATE;
+  alreadyInMenu = false;
+}
+
+void PicoWatch::showFastDebugMenu(byte debugMenuIndex) {
+  const char *const kItems[] = {PW_SETTINGS_VIBRATE, PW_SETTINGS_ACCELEROMETER};
+  uiRenderList(kItems, DEBUG_MENU_LENGTH, debugMenuIndex, true);
+  guiState = DEBUG_MENU_STATE;
 }
 
 void PicoWatch::showVibrateWindowSettings() {
@@ -1342,34 +1517,34 @@ void PicoWatch::showVibrateWindowSettings() {
       }
     }
 
-    display.fillScreen(GxEPD_BLACK);
-    display.setTextColor(GxEPD_WHITE);
-    display.setFont(&FreeMonoBold9pt7b);
+    display.fillScreen(uiBgColor());
+    display.setTextColor(uiFgColor());
+    display.setFont(uiMenuFont());
     display.setCursor(20, 25);
     display.println(PW_VIBWIN_TITLE);
 
     display.setCursor(5, 70);
     display.print(PW_VIBWIN_FROM_LABEL);
     if (setIndex == SET_VIBWIN_FROM) {
-      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
     }
     if (fromHour < 10) display.print("0");
     display.println(fromHour);
 
-    display.setTextColor(GxEPD_WHITE);
+    display.setTextColor(uiFgColor());
     display.setCursor(5, 105);
     display.print(PW_VIBWIN_TO_LABEL);
     if (setIndex == SET_VIBWIN_TO) {
-      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
     }
     if (toHour < 10) display.print("0");
     display.println(toHour);
 
-    display.setTextColor(GxEPD_WHITE);
+    display.setTextColor(uiFgColor());
     display.setCursor(5, 140);
     display.print(PW_ALARM_ENABLED_LABEL);
     if (setIndex == SET_VIBWIN_ENABLED) {
-      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
     }
     display.println(enabled ? PW_YES : PW_NO);
 
@@ -1382,6 +1557,138 @@ void PicoWatch::showVibrateWindowSettings() {
   saveVibrateWindow();
 
   showTimeMenu(timeMenuIndex, false);
+}
+
+void PicoWatch::showNotificationSettings() {
+  guiState = APP_STATE;
+
+  bool popupEnabled      = notificationPopupEnabled;
+  uint8_t popupDuration  = notificationPopupDurationS;
+  bool iconEnabled       = notificationIconEnabled;
+  bool iconLight         = notificationIconLight;
+
+  int8_t setIndex = SET_NOTIF_POPUP_ENABLED;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  // Same button-bounce hazard as setAlarm()/showVibrateWindowSettings() -
+  // Menu was just used to select this screen from the Settings list.
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  while (1) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      setIndex++;
+      if (setIndex > SET_NOTIF_ICON_LIGHT) {
+        break;
+      }
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      if (setIndex != SET_NOTIF_POPUP_ENABLED) {
+        setIndex--;
+      }
+    }
+
+    blink = 1 - blink;
+
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      switch (setIndex) {
+      case SET_NOTIF_POPUP_ENABLED:
+        popupEnabled = !popupEnabled;
+        break;
+      case SET_NOTIF_POPUP_DURATION:
+        popupDuration = (popupDuration <= NOTIFICATION_POPUP_DURATION_MIN_S)
+                             ? NOTIFICATION_POPUP_DURATION_MAX_S
+                             : popupDuration - NOTIFICATION_POPUP_DURATION_STEP_S;
+        break;
+      case SET_NOTIF_ICON_ENABLED:
+        iconEnabled = !iconEnabled;
+        break;
+      case SET_NOTIF_ICON_LIGHT:
+        iconLight = !iconLight;
+        break;
+      default:
+        break;
+      }
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      switch (setIndex) {
+      case SET_NOTIF_POPUP_ENABLED:
+        popupEnabled = !popupEnabled;
+        break;
+      case SET_NOTIF_POPUP_DURATION:
+        popupDuration = (popupDuration >= NOTIFICATION_POPUP_DURATION_MAX_S)
+                             ? NOTIFICATION_POPUP_DURATION_MIN_S
+                             : popupDuration + NOTIFICATION_POPUP_DURATION_STEP_S;
+        break;
+      case SET_NOTIF_ICON_ENABLED:
+        iconEnabled = !iconEnabled;
+        break;
+      case SET_NOTIF_ICON_LIGHT:
+        iconLight = !iconLight;
+        break;
+      default:
+        break;
+      }
+    }
+
+    display.fillScreen(uiBgColor());
+    display.setTextColor(uiFgColor());
+    display.setFont(uiMenuFont());
+    display.setCursor(10, 20);
+    display.println(PW_NOTIF_SETTINGS_TITLE);
+
+    display.setCursor(5, 55);
+    display.print(PW_NOTIF_SETTINGS_POPUP_LABEL);
+    if (setIndex == SET_NOTIF_POPUP_ENABLED) {
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
+    }
+    display.println(popupEnabled ? PW_YES : PW_NO);
+
+    display.setTextColor(uiFgColor());
+    display.setCursor(5, 85);
+    display.print(PW_NOTIF_SETTINGS_DURATION_LABEL);
+    if (setIndex == SET_NOTIF_POPUP_DURATION) {
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
+    }
+    display.print(popupDuration);
+    display.println("s");
+
+    display.setTextColor(uiFgColor());
+    display.setCursor(5, 115);
+    display.print(PW_NOTIF_SETTINGS_ICON_LABEL);
+    if (setIndex == SET_NOTIF_ICON_ENABLED) {
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
+    }
+    display.println(iconEnabled ? PW_YES : PW_NO);
+
+    display.setTextColor(uiFgColor());
+    display.setCursor(5, 145);
+    display.print(PW_NOTIF_SETTINGS_ICON_COLOR_LABEL);
+    if (setIndex == SET_NOTIF_ICON_LIGHT) {
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
+    }
+    display.println(iconLight ? PW_NOTIF_SETTINGS_ICON_LIGHT : PW_NOTIF_SETTINGS_ICON_DARK);
+
+    display.display(true); // partial refresh
+  }
+
+  notificationPopupEnabled   = popupEnabled;
+  notificationPopupDurationS = popupDuration;
+  notificationIconEnabled    = iconEnabled;
+  notificationIconLight      = iconLight;
+  saveNotificationSettings();
+
+  showSettingsMenu(settingsMenuIndex, false);
 }
 
 void PicoWatch::playSnake() {
@@ -2020,7 +2327,7 @@ void PicoWatch::_captureStepsAtMidnight() {
   int32_t history[kStepsHistoryDays];
   loadStepsHistory(history);
   for (int i = kStepsHistoryDays - 1; i > 0; i--) history[i] = history[i - 1];
-  history[0] = (int32_t)sensor.getCounter();
+  history[0] = (int32_t)todaySteps();
 
   Preferences writePrefs;
   writePrefs.begin(kPrefsNamespace, false);  // read-write
@@ -2029,6 +2336,454 @@ void PicoWatch::_captureStepsAtMidnight() {
   writePrefs.end();
 
   sensor.resetStepCounter();
+  stepsBaseline = 0;
+  lastSavedStepsTotal = 0;
+  saveStepsBaseline(0);
+}
+
+uint32_t PicoWatch::todaySteps() { return stepsBaseline + sensor.getCounter(); }
+
+void PicoWatch::_persistStepsProgress() {
+  const uint32_t total = todaySteps();
+  if (total == lastSavedStepsTotal) return; // nothing new since the last tick - skip the NVS write
+  saveStepsBaseline(total);
+  lastSavedStepsTotal = total;
+}
+
+namespace {
+// Matches BleNotificationCallback's signature (see BLE.h) - invoked
+// directly from the BLE write callback while _checkBleNotifications()'s
+// window is open. Pushes onto the front of the ring buffer, oldest entry
+// falls off once full.
+void onBleNotificationReceived(const char *src, const char *title, const char *body) {
+  const int last = min(notificationCount, NOTIFICATION_COUNT - 1);
+  for (int i = last; i > 0; i--) notifications[i] = notifications[i - 1];
+  // Free function (fixed C-function-pointer callback signature, see BLE.h's
+  // BleNotificationCallback), not a PicoWatch member - can't read the
+  // instance's `currentTime`, so read the RTC directly via the public
+  // static PicoWatch::RTC instead (see project memory, 14.08.2026: Jan
+  // wanted a way to tell same-looking notifications apart).
+  tmElements_t now;
+  PicoWatch::RTC.read(now);
+  snprintf(notifications[0].time, sizeof(notifications[0].time), "%02d:%02d", now.Hour, now.Minute);
+  strncpy(notifications[0].src, src, NOTIFICATION_SRC_LEN - 1);
+  notifications[0].src[NOTIFICATION_SRC_LEN - 1] = '\0';
+  strncpy(notifications[0].title, title, NOTIFICATION_TITLE_LEN - 1);
+  notifications[0].title[NOTIFICATION_TITLE_LEN - 1] = '\0';
+  strncpy(notifications[0].body, body, NOTIFICATION_BODY_LEN - 1);
+  notifications[0].body[NOTIFICATION_BODY_LEN - 1] = '\0';
+  if (notificationCount < NOTIFICATION_COUNT) notificationCount++;
+  hasUnreadNotification = true;
+  saveNotifications();
+}
+}  // namespace
+
+void PicoWatch::_checkBleNotifications() {
+  if (currentTime.Minute % bleNotifyIntervalMin != 0) return;
+
+  BLE ble;
+  ble.beginNotify(BLE_NOTIFY_DEVICE_NAME, onBleNotificationReceived);
+
+  // Only the "nobody's connected yet" wait is capped at BLE_NOTIFY_WINDOW_MS
+  // - once a phone actually connects, keep the radio up until it
+  // disconnects on its own OR goes quiet for BLE_NOTIFY_CONNECTED_IDLE_MS
+  // (up to BLE_NOTIFY_MAX_CONNECTED_MS as an absolute safety cap).
+  // Gadgetbridge's connect -> subscribe -> MTU-negotiate -> "initialized"
+  // handshake is several sequential round trips and can easily outlast a
+  // short fixed window - tearing the BLE stack down via stopNotify()'s
+  // NimBLEDevice::deinit() mid-handshake left the watch permanently stuck
+  // "connecting but never initialized" on the phone's side (see project
+  // memory, 14.08.2026). The idle-exit (added later the same day, after
+  // Jan reported the watch draining its battery fast) matters because
+  // without it, EVERY successful connection burned the full
+  // BLE_NOTIFY_MAX_CONNECTED_MS (60s) of active-radio time regardless of
+  // whether Gadgetbridge had already finished minutes earlier - ending as
+  // soon as the link goes quiet cuts the typical connected-and-done case
+  // from 60s down to ~BLE_NOTIFY_CONNECTED_IDLE_MS, without weakening the
+  // original fix (a genuinely slow/stalled handshake still gets the full
+  // MAX_CONNECTED_MS, since msSinceLastActivity() resets on the connect
+  // event itself and every subsequent write).
+  const unsigned long start = millis();
+  while (true) {
+    const unsigned long elapsed = millis() - start;
+    if (ble.notifyClientConnected()) {
+      if (elapsed >= BLE_NOTIFY_MAX_CONNECTED_MS) break;
+      if (ble.msSinceLastActivity() >= BLE_NOTIFY_CONNECTED_IDLE_MS) break;
+    } else if (elapsed >= BLE_NOTIFY_WINDOW_MS) {
+      break;
+    }
+    delay(50);
+  }
+
+  ble.stopNotify();
+}
+
+// On-demand, open-ended version of _checkBleNotifications() for INITIAL
+// pairing - the periodic check only advertises for BLE_NOTIFY_WINDOW_MS
+// (12s) once every BLE_NOTIFY_CHECK_INTERVAL_MIN (5min), which is far too
+// short/rare a window to reliably catch while manually finding+connecting
+// in Gadgetbridge (or a generic tool like nRF Connect) - realistically
+// takes well over a minute to scan, select, connect and subscribe as a
+// first-time user. No timeout here at all; only Back closes it, so
+// there's no race between the firmware tearing the radio down
+// (stopNotify()'s NimBLEDevice::deinit()) and the phone still being
+// mid-connection/mid-handshake.
+void PicoWatch::_pairBluetooth() {
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setTextColor(GxEPD_WHITE);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(0, 30);
+  display.println(PW_NOTIFICATIONS_PAIRING);
+  display.println(" ");
+  display.println(BLE_NOTIFY_DEVICE_NAME);
+  display.println(" ");
+  display.println(PW_NOTIFICATIONS_PAIRING_HINT);
+  display.display(false);
+
+  BLE ble;
+  ble.beginNotify(BLE_NOTIFY_DEVICE_NAME, onBleNotificationReceived);
+
+  pinMode(BACK_BTN_PIN, INPUT);
+  while (true) {
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) break;
+    delay(50);
+  }
+
+  ble.stopNotify();
+}
+
+bool PicoWatch::_httpViaBle(const String &url, String &body) {
+  BLE ble;
+  ble.beginNotify(BLE_NOTIFY_DEVICE_NAME, onBleNotificationReceived);
+
+  const unsigned long connectStart = millis();
+  while (!ble.notifyClientConnected()) {
+    if (millis() - connectStart >= BLE_HTTP_CONNECT_TIMEOUT_MS) {
+      ble.stopNotify();
+      return false;
+    }
+    delay(50);
+  }
+
+  // The raw GATT connect fires before Gadgetbridge's own subscribe/MTU-
+  // negotiate/"initialized" handshake completes (same multi-round-trip
+  // process as _checkBleNotifications()'s comment describes) - sending
+  // the request immediately would arrive before Gadgetbridge is ready to
+  // route it.
+  delay(BLE_HTTP_INIT_GRACE_MS);
+
+  if (!ble.httpGet(url.c_str())) {
+    ble.stopNotify();
+    return false;
+  }
+
+  const unsigned long requestStart = millis();
+  while (!ble.httpResponseReady()) {
+    if (millis() - requestStart >= BLE_HTTP_RESPONSE_TIMEOUT_MS) {
+      ble.stopNotify();
+      return false;
+    }
+    delay(50);
+  }
+
+  const bool ok = ble.httpResponseSuccess();
+  if (ok) body = ble.httpResponseBody();
+  ble.stopNotify();
+  return ok;
+}
+
+// Returns true if the user deleted this notification (Menu button) -
+// callers that hold their own copy of the notification list/count (e.g.
+// showNotifications()'s label array) must treat that as stale and rebuild
+// rather than continuing to use it (see showNotifications() below).
+bool PicoWatch::_showNotificationDetail(int index) {
+  if (index < 0 || index >= notificationCount) return false;
+  const PwNotification &n = notifications[index];
+
+  display.setFullWindow();
+  display.setTextColor(GxEPD_WHITE);
+  // 8b, not the ASCII-only 7b: src/title/body come straight from BLE.cpp's
+  // Gadgetbridge parser as raw Latin-1 bytes (real umlauts etc.) - 7b's
+  // glyph table stops at 0x7E, so Adafruit_GFX::write() silently skips
+  // any byte above that (no glyph AND no cursor advance) instead of
+  // rendering it, e.g. "Testgerät" -> "Testgert" (14.08.2026).
+  display.setFont(&FreeMonoBold9pt8b);
+  // uiRenderList() (the shared list-menu renderer, used to get here via
+  // showNotifications()) turns word-wrap OFF and never turns it back on -
+  // it's a per-display-object flag that just stays however the last
+  // screen left it, not something Adafruit_GFX resets per draw. Adafruit's
+  // own autowrap is character-count-based though, splitting words in half
+  // mid-word (Jan, 15.08.2026: "Back to disconnect" -> "Back to disconn"/
+  // "ect") - uiWrapWords() below breaks only at spaces instead, so wrap
+  // stays off here and the '\n's it inserts do the line-breaking.
+  display.setTextWrap(false);
+
+  // Flatten header/title/body into one scrollable line list - long bodies
+  // used to just run off the bottom edge and overlap the delete hint (Jan's
+  // screenshot, 15.08.2026: a 6-line status update overwrote the hint text
+  // instead of scrolling). Same idea as uiRenderList()'s scrollOffset/
+  // visibleRows windowing, but over free-flowing text rows instead of menu
+  // items.
+  String full = uiWrapWords((String(n.time) + " " + n.src).c_str(), DISPLAY_WIDTH - 10);
+  full += "\n\n";
+  full += uiWrapWords(n.title, DISPLAY_WIDTH - 10);
+  full += "\n\n";
+  full += uiWrapWords(n.body, DISPLAY_WIDTH - 10);
+
+  const int kMaxLines = 48; // generous cap for one notification's flattened text
+  String lines[kMaxLines];
+  int lineCount = 0;
+  int start = 0;
+  while (lineCount < kMaxLines) {
+    const int nl = full.indexOf('\n', start);
+    if (nl < 0) {
+      lines[lineCount++] = full.substring(start);
+      break;
+    }
+    lines[lineCount++] = full.substring(start, nl);
+    start = nl + 1;
+  }
+
+  // 18px = FreeMonoBold9pt8b's own yAdvance. Content viewport stops well
+  // short of the 200px bottom edge to leave room for the fixed delete hint
+  // below it, instead of the two overlapping.
+  const int kLineHeight = 18;
+  const int kContentTopY = 20;
+  const int kContentBottomY = 150;
+  const int visibleLines = max(1, (kContentBottomY - kContentTopY) / kLineHeight + 1);
+  const int maxScroll = max(0, lineCount - visibleLines);
+  int scrollOffset = 0;
+
+  pinMode(BACK_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(DOWN_BTN_PIN, INPUT);
+  // Menu was just used to OPEN this screen from showNotifications()'s list
+  // - without waiting for it to be released first, a still-held press
+  // would immediately register as "delete" below the instant this screen
+  // starts polling, deleting an entry the user never meant to touch (same
+  // button-reuse hazard as setTimezone()/changeWatchface() etc. elsewhere
+  // in this file).
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) delay(10);
+
+  bool deletePressed = false;
+  bool redraw = true;
+  while (true) {
+    if (redraw) {
+      display.fillScreen(GxEPD_BLACK);
+      display.setTextColor(GxEPD_WHITE);
+      int y = kContentTopY;
+      for (int row = 0; row < visibleLines && scrollOffset + row < lineCount; row++) {
+        display.setCursor(5, y);
+        display.println(lines[scrollOffset + row]);
+        y += kLineHeight;
+      }
+      // y=190 (too close to the 200px bottom edge) was cut off - this hint
+      // text is wider than the display at 9pt, so word-wrap pushes it onto
+      // a second line; that second line's baseline needs room too (Jan's
+      // screenshot, 15.08.2026).
+      display.setCursor(5, 165);
+      display.println(uiWrapWords(PW_NOTIFICATION_DELETE_HINT, DISPLAY_WIDTH - 10));
+      display.display(true); // partial refresh - this screen redraws on every scroll step
+      redraw = false;
+    }
+
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      deletePressed = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      deletePressed = false;
+      break;
+    }
+    if (maxScroll > 0 && digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      while (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) delay(10); // wait for release, same debounce idiom as elsewhere in this file
+      if (scrollOffset < maxScroll) {
+        scrollOffset++;
+        redraw = true;
+      }
+    }
+    if (maxScroll > 0 && digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      while (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) delay(10);
+      if (scrollOffset > 0) {
+        scrollOffset--;
+        redraw = true;
+      }
+    }
+    delay(10);
+  }
+  while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW || digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) delay(10); // wait for release
+
+  if (!deletePressed) return false;
+  for (int i = index; i < notificationCount - 1; i++) notifications[i] = notifications[i + 1];
+  notificationCount--;
+  saveNotifications();
+  return true;
+}
+
+void PicoWatch::_showNotificationPopup() {
+  if (notificationCount == 0) {
+    hasUnreadNotification = false;
+    return;
+  }
+  const PwNotification &n = notifications[0];
+
+  vibMotor(100, 6);
+
+  display.setFullWindow();
+  display.fillScreen(GxEPD_BLACK);
+  display.setTextColor(GxEPD_WHITE);
+  display.setFont(&FreeMonoBold9pt8b); // see _showNotificationDetail() comment - same Latin-1-vs-ASCII-glyph-table reason
+  display.setTextWrap(false); // see _showNotificationDetail()'s comment - uiWrapWords() does the line-breaking instead
+  display.setCursor(5, 25);
+  display.print(n.time);
+  display.print(" ");
+  display.println(uiWrapWords(n.src, DISPLAY_WIDTH - 10));
+  display.println();
+  display.println(uiWrapWords(n.title, DISPLAY_WIDTH - 10));
+  // Hint stays at a fixed Y (unlike the detail screen's flowing layout) -
+  // src/title together only run to a handful of lines even fully wrapped.
+  // y=180, not lower: this text is wider than the display at 9pt, wraps
+  // to a second line, and that second line's baseline needs room before
+  // the 200px bottom edge too (see _showNotificationDetail()'s identical
+  // fix, Jan's screenshot 15.08.2026).
+  display.setCursor(5, 160);
+  display.println(uiWrapWords(PW_NOTIFICATION_HINT, DISPLAY_WIDTH - 10));
+  display.display(true);
+
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(DOWN_BTN_PIN, INPUT);
+
+  bool openDetail = false;
+  const unsigned long start = millis();
+  // Was a hardcoded 15000 - now Settings -> "Notification Settings" ->
+  // popup duration (5-30s, see config.h's NOTIFICATION_POPUP_DURATION_*).
+  while (millis() - start < (unsigned long)notificationPopupDurationS * 1000UL) { // auto-dismiss if ignored, same as any other unattended screen
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      openDetail = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW || digitalRead(UP_BTN_PIN) == ACTIVE_LOW ||
+        digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      break;
+    }
+    delay(20);
+  }
+
+  // Only clear on an actual read (Menu -> detail view), NOT just because
+  // the popup timed out/got dismissed - this used to run unconditionally,
+  // so hasUnreadNotification (and therefore _drawNotificationIndicator()'s
+  // watchface icon) got cleared the instant the popup closed either way,
+  // meaning the icon could never actually show once the popup was done -
+  // exactly backwards from the point of having a persistent icon at all
+  // (Jan, 15.08.2026: "hab das Icon noch nie gesehen").
+  if (openDetail) {
+    hasUnreadNotification = false;
+    _showNotificationDetail(0);
+  }
+
+  RTC.read(currentTime);
+  showWatchFace(false);
+}
+
+void PicoWatch::showNotifications() {
+  guiState = APP_STATE;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  // Reaching the list at all - whether via the popup or straight from the
+  // main menu - counts as "checked"; clears the top-center watchface
+  // indicator (_drawNotificationIndicator()) same as the popup path
+  // already did. Without this, browsing here directly (never triggering
+  // the popup) left the flag set, so the icon never went away and the
+  // next minute tick would still pop up the same already-read notification.
+  hasUnreadNotification = false;
+
+  if (notificationCount == 0) {
+    display.setFullWindow();
+    display.fillScreen(GxEPD_BLACK);
+    display.setTextColor(GxEPD_WHITE);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(10, 90);
+    display.println(PW_NOTIFICATIONS_EMPTY);
+    display.setCursor(10, 180);
+    display.println(PW_NOTIFICATIONS_PAIR_HINT);
+    display.display(false);
+    while (1) {
+      if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+        while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) delay(10);
+        _pairBluetooth();
+        break;
+      }
+      if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+        while (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) delay(10);
+        break;
+      }
+      delay(20);
+    }
+    showMenu(menuIndex, false);
+    return;
+  }
+
+  // "HH:MM src" one-liner per stored notification - built fresh into local
+  // Strings since (unlike the other list menus) these labels are runtime
+  // data, not compile-time PW_XXX macros; uiRenderList() only needs the
+  // char* to stay valid for the duration of each call, which these are.
+  // Time-first (not "src: title" as before) so repeated same-src
+  // notifications (e.g. several WhatsApp messages, or Gadgetbridge's own
+  // test button) are still distinguishable at a glance in the list.
+  String labels[NOTIFICATION_COUNT];
+  const char *items[NOTIFICATION_COUNT];
+  for (int i = 0; i < notificationCount; i++) {
+    labels[i] = String(notifications[i].time) + " " + String(notifications[i].src);
+    items[i] = labels[i].c_str();
+  }
+
+  int pick = 0;
+  bool needsRedraw = true;
+  while (1) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      // A deletion invalidates `items`/`labels`/notificationCount (built
+      // once, above, before this loop started) - rather than patching
+      // them in place, just re-enter fresh (also correctly falls back to
+      // the empty-state screen if that was the last notification).
+      if (_showNotificationDetail(pick)) {
+        showNotifications();
+        return;
+      }
+      needsRedraw = true;
+      while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      break;
+    }
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      pick = (pick + 1) % notificationCount;
+      needsRedraw = true;
+      while (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      pick = (pick - 1 + notificationCount) % notificationCount;
+      needsRedraw = true;
+      while (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) delay(10);
+    }
+
+    if (!needsRedraw) continue;
+    needsRedraw = false;
+    uiRenderList(items, notificationCount, pick, true);
+  }
+
+  showMenu(menuIndex, false);
 }
 
 void PicoWatch::showStopwatch() {
@@ -2334,9 +3089,9 @@ void PicoWatch::showButtonSettings() {
       }
     }
 
-    display.fillScreen(GxEPD_BLACK);
-    display.setTextColor(GxEPD_WHITE);
-    display.setFont(&FreeMonoBold9pt7b);
+    display.fillScreen(uiBgColor());
+    display.setTextColor(uiFgColor());
+    display.setFont(uiMenuFont());
     display.setCursor(10, 20);
     display.println(PW_BUTTON_SETTINGS_TITLE);
 
@@ -2349,12 +3104,12 @@ void PicoWatch::showButtonSettings() {
 
     for (int i = 0; i < BUTTON_SETTINGS_FIELD_COUNT; i++) {
       const int yPos = 55 + i * 28;
-      display.setTextColor(GxEPD_WHITE);
+      display.setTextColor(uiFgColor());
       display.setCursor(0, yPos);
       display.println(labels[i]);
       display.setCursor(10, yPos + 14);
       if (i == setIndex) {
-        display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+        display.setTextColor(blink ? uiFgColor() : uiBgColor());
       }
       display.println(values[i]);
     }
@@ -2424,14 +3179,22 @@ void PicoWatch::showFontSizeSettings() {
     display.setCursor(10, 40);
     display.println(PW_FONT_SIZE_SUBTITLE);
 
-    display.setFont(size == UI_FONT_SIZE_SMALL     ? nullptr
-                     : size == UI_FONT_SIZE_BIG    ? &FreeMonoBold12pt7b
-                                                    : &FreeMonoBold9pt7b);
+    display.setFont(size == UI_FONT_SIZE_SMALL     ? &FreeMonoBold9pt8b
+                     : size == UI_FONT_SIZE_BIG    ? &FreeMonoBold15pt8b
+                                                    : &FreeMonoBold12pt8b);
     display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
     int16_t x1, y1;
     uint16_t w, h;
     const char *name = fontSizeName(size);
-    display.getTextBounds(name, 0, 90, &x1, &y1, &w, &h);
+    // X must match the setCursor() below (10, not 0) - getTextBounds()
+    // measures the string as if printed starting at the given X, and a
+    // custom font's per-glyph left bearing means the returned box isn't a
+    // simple x-independent width; measuring at the wrong X left the
+    // highlight box 10px offset from the actually-drawn text, clipping
+    // the last character's right edge (Jan's screenshot, 15.08.2026 -
+    // "the h in Bluetooth is only half marked", same bug in every
+    // highlight-box picker screen, not just Internet Access).
+    display.getTextBounds(name, 10, 90, &x1, &y1, &w, &h);
     display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, GxEPD_WHITE);
     display.setCursor(10, 90);
     display.println(name);
@@ -2442,6 +3205,232 @@ void PicoWatch::showFontSizeSettings() {
   if (confirmed && !cancelled) {
     uiFontSize = size;
     saveFontSize();
+  }
+
+  showSettingsMenu(settingsMenuIndex, false);
+}
+
+void PicoWatch::showInvertMenuSettings() {
+  guiState = APP_STATE;
+
+  bool inverted = menuInverted;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  bool cancelled = false;
+  bool confirmed = false;
+  while (!confirmed) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      confirmed = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      cancelled = true;
+      break;
+    }
+
+    blink = 1 - blink;
+
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      inverted = !inverted;
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      inverted = !inverted;
+    }
+
+    // Preview the actual invert effect this choice will apply to every
+    // list menu, not just its name - same "preview the real thing"
+    // reasoning as showFontSizeSettings() above.
+    const uint16_t bg = inverted ? GxEPD_WHITE : GxEPD_BLACK;
+    const uint16_t fg = inverted ? GxEPD_BLACK : GxEPD_WHITE;
+    display.fillScreen(bg);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setTextColor(fg);
+    display.setCursor(10, 20);
+    display.println(PW_SETTINGS_INVERT_MENU);
+
+    display.setTextColor(blink ? fg : bg);
+    int16_t x1, y1;
+    uint16_t w, h;
+    const char *name = inverted ? PW_YES : PW_NO;
+    display.getTextBounds(name, 10, 90, &x1, &y1, &w, &h); // X must match setCursor() below - see showFontSizeSettings()'s comment
+    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, fg);
+    display.setCursor(10, 90);
+    display.println(name);
+
+    display.display(true); // partial refresh
+  }
+
+  if (confirmed && !cancelled) {
+    menuInverted = inverted;
+    saveMenuInverted();
+  }
+
+  showSettingsMenu(settingsMenuIndex, false);
+}
+
+void PicoWatch::showNotifyIntervalSettings() {
+  guiState = APP_STATE;
+
+  uint8_t minutes = bleNotifyIntervalMin;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  bool cancelled = false;
+  bool confirmed = false;
+  while (!confirmed) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      confirmed = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      cancelled = true;
+      break;
+    }
+
+    blink = 1 - blink;
+
+    // Clamped, not wrapped (unlike showFontSizeSettings()'s modulo cycle) -
+    // 1..10 min is a real battery/latency tradeoff range, wrapping from 10
+    // back to 1 (or 1 down to 10) would silently jump past the middle of
+    // the range a user is trying to fine-tune.
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      if (minutes > 1) minutes--;
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      if (minutes < 10) minutes++;
+    }
+
+    display.fillScreen(uiBgColor());
+    display.setFont(uiMenuFont());
+    display.setTextColor(uiFgColor());
+    display.setCursor(10, 20);
+    display.println(PW_TIME_NOTIFY_INTERVAL);
+    display.setCursor(10, 40);
+    display.println(PW_NOTIFY_INTERVAL_SUBTITLE);
+
+    display.setTextColor(blink ? uiFgColor() : uiBgColor());
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d min", minutes);
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(buf, 10, 90, &x1, &y1, &w, &h); // X must match setCursor() below - see showFontSizeSettings()'s comment
+    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, uiFgColor());
+    display.setCursor(10, 90);
+    display.println(buf);
+
+    display.display(true); // partial refresh
+  }
+
+  if (confirmed && !cancelled) {
+    bleNotifyIntervalMin = minutes;
+    saveNotifyInterval();
+  }
+
+  showTimeMenu(timeMenuIndex, false);
+}
+
+void PicoWatch::showInternetAccessSettings() {
+  guiState = APP_STATE;
+
+  uint8_t mode = internetAccessMode;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  bool cancelled = false;
+  bool confirmed = false;
+  while (!confirmed) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      confirmed = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      cancelled = true;
+      break;
+    }
+
+    blink = 1 - blink;
+
+    // Only two choices - Up/Down both just toggle, matching
+    // showInvertMenuSettings()'s boolean-choice pattern rather than
+    // showNotifyIntervalSettings()'s clamped range.
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW || digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      mode = (mode == INTERNET_ACCESS_WIFI) ? INTERNET_ACCESS_BLE : INTERNET_ACCESS_WIFI;
+    }
+
+    display.fillScreen(uiBgColor());
+    display.setFont(uiMenuFont());
+    // Wrap OFF for the title - it's a one-line heading, not paragraph
+    // text; at "Big" font size PW_INTERNET_ACCESS_TITLE is wide enough to
+    // wrap onto a second line, which then landed under the fixed-position
+    // "Bluetooth"/"WiFi" highlight box below and got overwritten by it
+    // (Jan's screenshot, 15.08.2026) - clipping at the edge is the correct
+    // failure mode for a heading, not wrapping into content underneath.
+    display.setTextWrap(false);
+    display.setTextColor(uiFgColor());
+    display.setCursor(10, 20);
+    display.println(PW_INTERNET_ACCESS_TITLE);
+
+    display.setTextColor(blink ? uiFgColor() : uiBgColor());
+    const char *name = mode == INTERNET_ACCESS_BLE ? PW_INTERNET_ACCESS_BLE : PW_INTERNET_ACCESS_WIFI;
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(name, 10, 55, &x1, &y1, &w, &h); // X must match setCursor() below - see showFontSizeSettings()'s comment
+    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, uiFgColor());
+    display.setCursor(10, 55);
+    display.println(name);
+
+    // Jan explicitly wanted this called out - BLE mode only works via
+    // Gadgetbridge's phone-proxied HTTP, same connection weather/
+    // notifications already use, not a second independent link. It's
+    // genuinely meant to flow onto multiple lines, but via uiWrapWords()
+    // (word boundaries, not Adafruit's own character-count autowrap) - see
+    // _showNotificationDetail()'s comment on why wrap stays off entirely.
+    display.setTextColor(uiFgColor());
+    display.setCursor(10, 100);
+    display.println(uiWrapWords(PW_INTERNET_ACCESS_HINT, DISPLAY_WIDTH - 15));
+
+    display.display(true); // partial refresh
+  }
+
+  if (confirmed && !cancelled) {
+    internetAccessMode = mode;
+    saveInternetAccessMode();
   }
 
   showSettingsMenu(settingsMenuIndex, false);
@@ -2487,21 +3476,21 @@ void PicoWatch::showLanguageSettings() {
       language = (language + PW_LANG_COUNT - 1) % PW_LANG_COUNT;
     }
 
-    display.fillScreen(GxEPD_BLACK);
-    display.setFont(&FreeMonoBold9pt7b);
-    display.setTextColor(GxEPD_WHITE);
+    display.fillScreen(uiBgColor());
+    display.setFont(uiMenuFont());
+    display.setTextColor(uiFgColor());
     display.setCursor(10, 20);
     display.println(PW_SETTINGS_LANGUAGE);
 
     // Language names are deliberately never translated (see
     // pwLanguageName()) - a German speaker still needs to recognize
     // "Deutsch" while the UI is currently showing English strings.
-    display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    display.setTextColor(blink ? uiFgColor() : uiBgColor());
     int16_t x1, y1;
     uint16_t w, h;
     const char *name = pwLanguageName(language);
-    display.getTextBounds(name, 0, 60, &x1, &y1, &w, &h);
-    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, GxEPD_WHITE);
+    display.getTextBounds(name, 10, 60, &x1, &y1, &w, &h); // X must match setCursor() below - see showFontSizeSettings()'s comment
+    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, uiFgColor());
     display.setCursor(10, 60);
     display.println(name);
 
@@ -2617,9 +3606,9 @@ void PicoWatch::showWeatherForecast() {
 
 void PicoWatch::showAbout() {
   display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
+  display.fillScreen(uiBgColor());
+  display.setFont(uiMenuFont());
+  display.setTextColor(uiFgColor());
   display.setCursor(0, 20);
 
   display.print(PW_ABOUT_LIBVER);
@@ -2676,15 +3665,15 @@ void PicoWatch::updateFromGithub() {
   display.epd2.setBusyCallback(0); // temporarily disable lightsleep on busy
 
   display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
+  display.fillScreen(uiBgColor());
+  display.setFont(uiMenuFont());
+  display.setTextColor(uiFgColor());
   display.setCursor(0, 30);
   display.println(PW_GITHUB_CHECKING);
   display.display(false);
 
   auto showResultAndReturn = [&](const char *line1, const char *line2 = nullptr) {
-    display.fillScreen(GxEPD_BLACK);
+    display.fillScreen(uiBgColor());
     display.setCursor(0, 30);
     display.println(line1);
     if (line2) display.println(line2);
@@ -2732,7 +3721,7 @@ void PicoWatch::updateFromGithub() {
        latestPatch > SOFTWARE_VERSION_PATCH);
 
   if (!newer) {
-    display.fillScreen(GxEPD_BLACK);
+    display.fillScreen(uiBgColor());
     display.setCursor(0, 30);
     display.println(PW_GITHUB_ALREADY_LATEST_1);
     display.println(PW_GITHUB_ALREADY_LATEST_2);
@@ -2764,7 +3753,7 @@ void PicoWatch::updateFromGithub() {
     return;
   }
 
-  display.fillScreen(GxEPD_BLACK);
+  display.fillScreen(uiBgColor());
   display.setCursor(0, 30);
   display.println(PW_GITHUB_DOWNLOADING);
   display.println(tag);
@@ -2816,7 +3805,7 @@ void PicoWatch::updateFromGithub() {
         const int percent = (written * 100) / total;
         if (percent != lastShownPercent) {
           lastShownPercent = percent;
-          display.fillRect(0, 60, 200, 20, GxEPD_BLACK);
+          display.fillRect(0, 60, 200, 20, uiBgColor());
           display.setCursor(0, 75);
           display.print(percent);
           display.println("%");
@@ -2855,7 +3844,7 @@ void PicoWatch::updateFromGithub() {
     return;
   }
 
-  display.fillScreen(GxEPD_BLACK);
+  display.fillScreen(uiBgColor());
   display.setCursor(0, 30);
   display.println(PW_GITHUB_VERIFIED);
   display.println(PW_GITHUB_REBOOTING);
@@ -2866,14 +3855,14 @@ void PicoWatch::updateFromGithub() {
 
 void PicoWatch::showBuzz() {
   display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
+  display.fillScreen(uiBgColor());
+  display.setFont(uiMenuFont());
+  display.setTextColor(uiFgColor());
   display.setCursor(70, 80);
   display.println(PW_BUZZ);
   display.display(false); // full refresh
   vibMotor();
-  showSettingsMenu(settingsMenuIndex, false);
+  showDebugMenu(debugMenuIndex, false);
 }
 
 void PicoWatch::vibMotor(uint8_t intervalMs, uint8_t length) {
@@ -2979,56 +3968,61 @@ void PicoWatch::setTime() {
       }
     }
 
-    display.fillScreen(GxEPD_BLACK);
-    display.setTextColor(GxEPD_WHITE);
+    display.fillScreen(uiBgColor());
+    display.setTextColor(uiFgColor());
+    // DSEG7 (the big 7-segment clock font) stays fixed here regardless of
+    // Settings -> Font Size - it's the same decorative digit style the
+    // main watchface itself uses, not menu text, so it's not what "match
+    // the Settings font size" means (unlike the FreeMonoBold date row
+    // below, which is exactly that).
     display.setFont(&DSEG7_Classic_Bold_53);
 
     display.setCursor(5, 80);
     if (setIndex == SET_HOUR) { // blink hour digits
-      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
     }
     if (hour < 10) {
       display.print("0");
     }
     display.print(hour);
 
-    display.setTextColor(GxEPD_WHITE);
+    display.setTextColor(uiFgColor());
     display.print(":");
 
     display.setCursor(108, 80);
     if (setIndex == SET_MINUTE) { // blink minute digits
-      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
     }
     if (minute < 10) {
       display.print("0");
     }
     display.print(minute);
 
-    display.setTextColor(GxEPD_WHITE);
+    display.setTextColor(uiFgColor());
 
-    display.setFont(&FreeMonoBold9pt7b);
+    display.setFont(uiMenuFont());
     display.setCursor(45, 150);
     if (setIndex == SET_YEAR) { // blink minute digits
-      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
     }
     display.print(2000 + year);
 
-    display.setTextColor(GxEPD_WHITE);
+    display.setTextColor(uiFgColor());
     display.print("/");
 
     if (setIndex == SET_MONTH) { // blink minute digits
-      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
     }
     if (month < 10) {
       display.print("0");
     }
     display.print(month);
 
-    display.setTextColor(GxEPD_WHITE);
+    display.setTextColor(uiFgColor());
     display.print("/");
 
     if (setIndex == SET_DAY) { // blink minute digits
-      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+      display.setTextColor(blink ? uiFgColor() : uiBgColor());
     }
     if (day < 10) {
       display.print("0");
@@ -3100,9 +4094,9 @@ void PicoWatch::setTimezone() {
                                                                       : offsetSec - kGmtOffsetStepSec;
     }
 
-    display.fillScreen(GxEPD_BLACK);
-    display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
-    display.setFont(&FreeMonoBold9pt7b);
+    display.fillScreen(uiBgColor());
+    display.setTextColor(blink ? uiFgColor() : uiBgColor());
+    display.setFont(uiMenuFont());
     display.setCursor(20, 100);
     char buf[16];
     long absOffset = offsetSec < 0 ? -offsetSec : offsetSec;
@@ -3185,18 +4179,18 @@ void PicoWatch::setWeatherCity() {
       digits[setIndex] = (digits[setIndex] + 9) % 10;
     }
 
-    display.fillScreen(GxEPD_BLACK);
-    display.setTextColor(GxEPD_WHITE);
-    display.setFont(&FreeMonoBold9pt7b);
+    display.fillScreen(uiBgColor());
+    display.setTextColor(uiFgColor());
+    display.setFont(uiMenuFont());
     display.setCursor(10, 25);
     display.println(PW_SET_CITY_TITLE);
 
     for (int i = 0; i < kDigitCount; i++) {
       display.setCursor(15 + i * 24, 90);
       if (i == setIndex) {
-        display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+        display.setTextColor(blink ? uiFgColor() : uiBgColor());
       } else {
-        display.setTextColor(GxEPD_WHITE);
+        display.setTextColor(uiFgColor());
       }
       display.print(digits[i]);
     }
@@ -3204,7 +4198,7 @@ void PicoWatch::setWeatherCity() {
     // Shifted up 15px from the original 150/170/190 - the last line was
     // sitting right at the 200px display edge and getting clipped/hard to
     // read.
-    display.setTextColor(GxEPD_WHITE);
+    display.setTextColor(uiFgColor());
     display.setCursor(5, 135);
     display.println(PW_SET_CITY_FIND_1);
     display.setCursor(5, 155);
@@ -3239,9 +4233,9 @@ void PicoWatch::setWeatherCity() {
 
 void PicoWatch::showAccelerometer() {
   display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
+  display.fillScreen(uiBgColor());
+  display.setFont(uiMenuFont());
+  display.setTextColor(uiFgColor());
 
   Accel acc;
 
@@ -3265,7 +4259,7 @@ void PicoWatch::showAccelerometer() {
       // Get acceleration data
       bool res          = sensor.getAccel(acc);
       uint8_t direction = sensor.getDirection();
-      display.fillScreen(GxEPD_BLACK);
+      display.fillScreen(uiBgColor());
       display.setCursor(0, 30);
       if (res == false) {
         display.println(PW_ACCEL_FAIL);
@@ -3306,7 +4300,7 @@ void PicoWatch::showAccelerometer() {
     }
   }
 
-  showSettingsMenu(settingsMenuIndex, false);
+  showDebugMenu(debugMenuIndex, false);
 }
 
 void PicoWatch::showWatchFace(bool partialRefresh) {
@@ -3314,8 +4308,28 @@ void PicoWatch::showWatchFace(bool partialRefresh) {
   // At this point it is sure we are going to update
   display.epd2.asyncPowerOn();
   drawWatchFace();
+  _drawNotificationIndicator(); // over the watchface, not per-face - see .h
   display.display(partialRefresh); // partial refresh
   guiState = WATCHFACE_STATE;
+}
+
+// A drawn shape (rect + two lines forming an envelope flap), not a
+// PROGMEM bitmap - trivial to size/reposition, and unlike a bitmap has no
+// fixed foreground color baked in, so honoring notificationIconLight is
+// just picking which color to pass below instead of needing a second
+// bitmap. Settings -> "Notification Settings" (showNotificationSettings())
+// controls both whether this draws at all and which color - a fixed
+// white icon was invisible on light-background watchfaces (Jan,
+// 15.08.2026).
+void PicoWatch::_drawNotificationIndicator() {
+  if (!notificationIconEnabled || !hasUnreadNotification) return;
+  const uint16_t color = notificationIconLight ? GxEPD_WHITE : GxEPD_BLACK;
+  const int w = 18, h = 13;
+  const int x = (DISPLAY_WIDTH - w) / 2;
+  const int y = 3;
+  display.drawRect(x, y, w, h, color);
+  display.drawLine(x, y, x + w / 2, y + h / 2, color);
+  display.drawLine(x + w, y, x + w / 2, y + h / 2, color);
 }
 
 void PicoWatch::drawWatchFace() {
@@ -3348,50 +4362,67 @@ weatherData PicoWatch::_getWeatherData(String cityID, String lat, String lon, St
   if (weatherIntervalCounter >=
       updateInterval) { // only update if WEATHER_UPDATE_INTERVAL has elapsed
                         // i.e. 30 minutes
-    if (connectWiFi()) {
+    String weatherQueryURL = url;
+    if(cityID != ""){
+      weatherQueryURL.replace("{cityID}", cityID);
+    }else{
+      weatherQueryURL.replace("{lat}", lat);
+      weatherQueryURL.replace("{lon}", lon);
+    }
+    weatherQueryURL.replace("{units}", units);
+    weatherQueryURL.replace("{lang}", lang);
+    weatherQueryURL.replace("{apiKey}", apiKey);
+
+    // Settings -> "Internet Access": same request either way, only the
+    // transport (and therefore who actually performs it) differs - see
+    // config.h's INTERNET_ACCESS_*/BLE_HTTP_* comment and _httpViaBle().
+    bool gotPayload = false;
+    String payload;
+    if (internetAccessMode == INTERNET_ACCESS_BLE) {
+      gotPayload = _httpViaBle(weatherQueryURL, payload);
+    } else if (connectWiFi()) {
       HTTPClient http; // Use Weather API for live data if WiFi is connected
       http.setConnectTimeout(3000); // 3 second max timeout
-      String weatherQueryURL = url;
-      if(cityID != ""){
-        weatherQueryURL.replace("{cityID}", cityID);
-      }else{
-        weatherQueryURL.replace("{lat}", lat);
-        weatherQueryURL.replace("{lon}", lon);
-      }
-      weatherQueryURL.replace("{units}", units);
-      weatherQueryURL.replace("{lang}", lang);
-      weatherQueryURL.replace("{apiKey}", apiKey);
       http.begin(weatherQueryURL.c_str());
-      int httpResponseCode = http.GET();
+      const int httpResponseCode = http.GET();
       if (httpResponseCode == 200) {
-        String payload             = http.getString();
-        JSONVar responseObject     = JSON.parse(payload);
-        currentWeather.temperature = int(responseObject["main"]["temp"]);
-        currentWeather.weatherConditionCode =
-            int(responseObject["weather"][0]["id"]);
-        currentWeather.weatherDescription =
-		        JSONVar::stringify(responseObject["weather"][0]["main"]);
-	      currentWeather.external = true;
-		        breakTime((time_t)(int)responseObject["sys"]["sunrise"], currentWeather.sunrise);
-		        breakTime((time_t)(int)responseObject["sys"]["sunset"], currentWeather.sunset);
-        // sync NTP during weather API call and use timezone of lat & lon,
-        // unless the user has set a timezone manually (see setTimezone()) -
-        // otherwise this would silently overwrite their choice on every sync.
-        {
-          long manualOffset;
-          if (!loadManualGmtOffset(manualOffset)) {
-            gmtOffset = int(responseObject["timezone"]);
-          }
-        }
-        syncNTP(gmtOffset);
-      } else {
-        // http error
+        payload = http.getString();
+        gotPayload = true;
       }
       http.end();
       // turn off radios
       WiFi.mode(WIFI_OFF);
       btStop();
-    } else { // No WiFi, use internal temperature sensor
+    }
+
+    if (gotPayload) {
+      JSONVar responseObject     = JSON.parse(payload);
+      currentWeather.temperature = int(responseObject["main"]["temp"]);
+      currentWeather.weatherConditionCode =
+          int(responseObject["weather"][0]["id"]);
+      currentWeather.weatherDescription =
+          JSONVar::stringify(responseObject["weather"][0]["main"]);
+      currentWeather.external = true;
+      breakTime((time_t)(int)responseObject["sys"]["sunrise"], currentWeather.sunrise);
+      breakTime((time_t)(int)responseObject["sys"]["sunset"], currentWeather.sunset);
+      // sync time during weather fetch and use timezone of lat & lon,
+      // unless the user has set a timezone manually (see setTimezone()) -
+      // otherwise this would silently overwrite their choice on every sync.
+      {
+        long manualOffset;
+        if (!loadManualGmtOffset(manualOffset)) {
+          gmtOffset = int(responseObject["timezone"]);
+        }
+      }
+      // True NTP needs a UDP socket, which Gadgetbridge's HTTP-only proxy
+      // can't carry - syncNTP() stays WiFi-only, _syncTimeViaBle() is the
+      // BLE-mode equivalent (see config.h's BLE_TIME_API_URL comment).
+      if (internetAccessMode == INTERNET_ACCESS_BLE) {
+        _syncTimeViaBle(gmtOffset);
+      } else {
+        syncNTP(gmtOffset);
+      }
+    } else { // No connection (either transport), use internal temperature sensor
       uint8_t temperature = sensor.readTemperature(); // celsius
       if (!currentWeather.isMetric) {
         temperature = temperature * 9. / 5. + 32.; // fahrenheit
@@ -3575,15 +4606,26 @@ namespace {
 // reference's design, not just its logic.
 constexpr const char *kWifiPortalTheme =
     "<style>"
+    "*{box-sizing:border-box}"
     "body{background:radial-gradient(ellipse 900px 500px at 50% -10%,#0d2338,transparent) #070c13;"
     "color:#e7f3fb;font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif}"
     "h1,h2,h3{color:#e7f3fb}"
     "a{color:#4fc3f7}a:hover{color:#7dd8fb}"
-    "input,select{background:#101823;border:1px solid #22303f;color:#e7f3fb;border-radius:10px;margin:8px 0}"
-    "button,input[type='button'],input[type='submit']{background:linear-gradient(135deg,#4fc3f7,#0f6fa8);"
-    "color:#0d1015;font-weight:600;border-radius:999px;margin:6px 0}"
+    // width:100%/line-height/font-size/border/cursor here match WiFiManager's
+    // own stock button styling (wm_strings_en.h's HTTP_STYLE) - the pages
+    // rendered by themedPage() below are standalone documents that never
+    // load that stock stylesheet, so without repeating these rules here
+    // their buttons/inputs render at shrink-to-fit width instead of the
+    // full-width stacked look every WiFiManager-native page already has.
+    "input,select{background:#101823;border:1px solid #22303f;color:#e7f3fb;border-radius:10px;"
+    "margin:8px 0;width:100%;padding:8px;font-size:1rem}"
+    "button,input[type='button'],input[type='submit'],a.btnlink{background:linear-gradient(135deg,#4fc3f7,#0f6fa8);"
+    "color:#0d1015;font-weight:600;border-radius:999px;margin:6px 0;border:0;cursor:pointer;"
+    "width:100%;line-height:2.4rem;font-size:1.1rem}"
     "button.D{background:#dc3630;color:#fff}"
-    ".msg{background:#101823;border:1px solid #22303f;border-left-width:5px;border-radius:10px;color:#a9bcca}"
+    "a.btnlink{display:block;text-align:center;text-decoration:none}"
+    ".msg{background:#101823;border:1px solid #22303f;border-left-width:5px;border-radius:10px;"
+    "color:#a9bcca;padding:10px}"
     ".msg.P{border-left-color:#4fc3f7}.msg.D{border-left-color:#dc3630}.msg.S{border-left-color:#4ade80}"
     "hr{border:none;border-top:1px solid #22303f;margin:18px 0}"
     "</style>";
@@ -3609,6 +4651,23 @@ String themedPage(const String &title, const String &bodyHtml) {
   html += "</div></body></html>";
   return html;
 }
+
+// The "<div class='msg S'>...</div><hr><a class='btnlink' href=...>Back</a>"
+// success-response body was repeated verbatim (only the message text/back
+// link changed) after nearly every settings POST handler below - factored
+// out once savings were requested (see project memory, 14.08.2026).
+String savedPage(const String &title, const String &backHref, const String &msg = "Saved.") {
+  return themedPage(title, "<div class='msg S'>" + msg + "</div>"
+                            "<hr><a class='btnlink' href='" + backHref + "'>Back</a>");
+}
+
+// WiFiManager stores pointers, not copies (setCustomMenuHTML() just does
+// `_customMenuHTML = html;`) - matches pfsense-status-esp32's own
+// config_portal.cpp comment on gCustomMenuHtml verbatim: "WiFiManager
+// stores pointers, so keep backing strings in module-level storage." A
+// local String's backing buffer isn't guaranteed to outlive the whole
+// WIFI_STAY_CONNECTED_TIMEOUT window the portal stays up for; this does.
+String gCustomMenuHtml;
 }  // namespace
 
 void PicoWatch::setupWifi() {
@@ -3618,9 +4677,9 @@ void PicoWatch::setupWifi() {
   wifiManager.setCustomHeadElement(kWifiPortalTheme);
 
   display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
+  display.fillScreen(uiBgColor());
+  display.setFont(uiMenuFont());
+  display.setTextColor(uiFgColor());
   display.setCursor(0, 30);
   display.println(PW_WIFI_CONNECTING);
   display.display(false);
@@ -3643,15 +4702,27 @@ void PicoWatch::setupWifi() {
   //      routes + setCustomMenuHTML() have something to attach to, even
   //      when no portal was ever shown.
   WiFi.mode(WIFI_STA);
+  // Must come after mode(WIFI_STA) but before begin() - the hostname is
+  // sent as part of the DHCP request, too late to change once connected.
+  // Empty means "never configured yet" - falls back to the ESP32 core's
+  // own default ("esp32-<chipid>"), which is genuinely how Jan noticed
+  // the watch in his router's client list and asked for this setting
+  // (15.08.2026, web menu only - see the Internet Access page comment).
+  if (picoWatchHostname[0] != '\0') WiFi.setHostname(picoWatchHostname);
   WiFi.begin();
   unsigned long waitStart = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - waitStart < 8000) {
+  // Was 8000ms - too short in practice (Jan, 15.08.2026): a real WPA2
+  // handshake + DHCP lease can take longer than that on some routers/
+  // distances, and hitting this timeout falls all the way through to the
+  // AP config portal below, forcing a reconfigure for what's usually just
+  // a slow reconnect, not an actual credentials problem.
+  while (WiFi.status() != WL_CONNECTED && millis() - waitStart < WIFI_CONNECT_TIMEOUT_MS) {
     delay(50);
   }
 
   bool connected = (WiFi.status() == WL_CONNECTED);
   if (!connected) {
-    display.fillScreen(GxEPD_BLACK);
+    display.fillScreen(uiBgColor());
     display.setCursor(0, 20);
     display.println(PW_WIFI_CONNECT_PHONE_TO);
     display.println(WIFI_AP_SSID);
@@ -3662,21 +4733,47 @@ void PicoWatch::setupWifi() {
     // called once per true reset) shown on-screen in _configModeCallback -
     // matches pfsense-status-esp32's actual approach instead of a
     // hardcoded key anyone reading the source could use.
+    //
+    // setConfigPortalTimeout() matters more than it looks: WIFI_AP_TIMEOUT
+    // was defined in config.h but never actually wired to anything (dead
+    // code) - startConfigPortal() therefore had NO timeout at all and
+    // blocked forever until someone actually completed the config form.
+    // Jan hit this directly (15.08.2026): once it fell into AP mode there
+    // was no way back to the watchface short of configuring WiFi. This
+    // firmware deliberately does NOT poll the Back button inside this
+    // call - that would mean patching into WiFiManager's own blocking
+    // portal loop, which caused a real "always lands in AP mode"
+    // regression the last time this area was touched (see project memory,
+    // 04.08.2026) - so a bounded auto-timeout via WiFiManager's own public
+    // API is the safe fix here, not a button-interrupt.
+    // setAPClientCheck(true) makes the timeout above only count down while
+    // NOBODY is connected to the AP (matches WIFI_AP_TIMEOUT's original
+    // "seconds with zero AP clients" comment) - without it, a flat
+    // unconditional 60s would risk cutting Jan off mid-setup if it takes
+    // him a bit to actually fill in the form after connecting his phone.
+    wifiManager.setAPClientCheck(true);
+    wifiManager.setConfigPortalTimeout(WIFI_AP_TIMEOUT);
     connected = wifiManager.startConfigPortal(WIFI_AP_SSID, wifiApPassword);
   }
 
-  display.fillScreen(GxEPD_BLACK);
+  display.fillScreen(uiBgColor());
   display.setCursor(0, 30);
+  // uiWrapWords(), not raw println() - these are some of the longer
+  // static strings in the whole UI (translations can run longer still),
+  // and at "Big" font size easily overflow one line; GxEPD2's own
+  // autowrap breaks wherever the character count runs out (mid-word),
+  // uiWrapWords() only breaks at spaces (Jan, 15.08.2026 - "Back to
+  // disconnect" split as "Back to disconn"/"ect").
   if (!connected) { // WiFi setup failed
-    display.println(PW_WIFI_SETUP_FAILED);
-    display.println(PW_WIFI_TIMED_OUT);
+    display.println(uiWrapWords(PW_WIFI_SETUP_FAILED, DISPLAY_WIDTH - 5));
+    display.println(uiWrapWords(PW_WIFI_TIMED_OUT, DISPLAY_WIDTH - 5));
   } else {
-    display.println(PW_WIFI_CONNECTED_TO);
+    display.println(uiWrapWords(PW_WIFI_CONNECTED_TO, DISPLAY_WIDTH - 5));
     display.println(WiFi.SSID());
-    display.println(PW_WIFI_OPEN_IN_BROWSER);
+    display.println(uiWrapWords(PW_WIFI_OPEN_IN_BROWSER, DISPLAY_WIDTH - 5));
     display.println(WiFi.localIP());
     display.println(" ");
-    display.println(PW_WIFI_BACK_TO_DISCONNECT);
+    display.println(uiWrapWords(PW_WIFI_BACK_TO_DISCONNECT, DISPLAY_WIDTH - 5));
     weatherIntervalCounter = -1; // Reset to force weather to be read again
     lastIPAddress = WiFi.localIP();
     WiFi.SSID().toCharArray(lastSSID, 30);
@@ -3698,58 +4795,34 @@ void PicoWatch::setupWifi() {
     // reconnect").
     wifiManager.startWebPortal();
 
-    unsigned long authUntil = 0;
-    IPAddress authIp;
     String webMenuPassword = loadWebMenuPassword();
+    // Real WiFiManager-native login gate, ported 1:1 from pfsense-status-
+    // esp32 (found 06.08.2026: that project doesn't use stock WiFiManager
+    // at all - it vendors a patched fork, see third_party/
+    // wifimanager-patched/, which adds setHttpAuth()/setCustomStatusHTML()/
+    // a public handleRequest() and a real /wm-login page baked directly
+    // into WiFiManager.cpp's own request handling, gating even its own
+    // built-in pages - not something achievable with the stock library's
+    // public API). "admin" is passed as the username the same way
+    // pfsense's config_portal.cpp:890 does, even though the patched
+    // setHttpAuth() ignores it entirely (password-only login) - kept for
+    // literal parity with the reference. Same >=8 char minimum as our own
+    // saveWebMenuPassword() flow already enforces.
+    wifiManager.setHttpAuth("admin", webMenuPassword.c_str());
 
     if (wifiManager.server) {
       WebServer &server = *wifiManager.server;
-      auto isAuthed = [&]() {
-        return authUntil != 0 && millis() <= authUntil && server.client().remoteIP() == authIp;
-      };
-      auto requireAuth = [&]() {
-        if (isAuthed()) return true;
-        server.sendHeader("Location", "/login", true);
-        server.send(302, "text/plain", "");
-        return false;
-      };
-      auto loginForm = [](const char *notice) {
-        String body;
-        if (notice) {
-          body += "<div class='msg D'>";
-          body += notice;
-          body += "</div>";
-        }
-        body += "<form method='POST' action='/login'>"
-                "<input type='password' name='p' placeholder='Password'>"
-                "<button type='submit'>Login</button></form>";
-        return body;
-      };
-
-      server.on("/login", HTTP_GET, [&]() {
-        server.send(200, "text/html", themedPage("Login", loginForm(nullptr)));
-      });
-      server.on("/login", HTTP_POST, [&]() {
-        if (server.arg("p") == webMenuPassword) {
-          authUntil = millis() + WEB_MENU_SESSION_MS;
-          authIp = server.client().remoteIP();
-          server.sendHeader("Location", "/", true);
-          server.send(302, "text/plain", "");
-        } else {
-          server.send(200, "text/html", themedPage("Login", loginForm("Wrong password.")));
-        }
-      });
       server.on("/change-password", HTTP_GET, [&]() {
-        if (!requireAuth()) return;
+        if (!wifiManager.handleRequest()) return;
         server.send(200, "text/html",
                      themedPage("Change Password",
                                 "<form method='POST' action='/change-password'>"
                                 "<input type='password' name='p' placeholder='New password (min 8 chars)'>"
                                 "<button type='submit'>Save</button></form>"
-                                "<hr><a href='/'>Back</a>"));
+                                "<hr><a class='btnlink' href='/'>Back</a>"));
       });
       server.on("/change-password", HTTP_POST, [&]() {
-        if (!requireAuth()) return;
+        if (!wifiManager.handleRequest()) return;
         const String newPass = server.arg("p");
         if (newPass.length() < 8) {
           server.send(200, "text/html",
@@ -3758,32 +4831,66 @@ void PicoWatch::setupWifi() {
                                   "<form method='POST' action='/change-password'>"
                                   "<input type='password' name='p' placeholder='New password (min 8 chars)'>"
                                   "<button type='submit'>Save</button></form>"
-                                  "<hr><a href='/'>Back</a>"));
+                                  "<hr><a class='btnlink' href='/'>Back</a>"));
           return;
         }
         webMenuPassword = newPass;
         saveWebMenuPassword(newPass);
+        wifiManager.setHttpAuth("admin", webMenuPassword.c_str()); // re-arm the gate with the new password immediately
         server.send(200, "text/html",
                      themedPage("Change Password",
-                                "<div class='msg S'>Password changed.</div><hr><a href='/'>Back</a>"));
+                                "<div class='msg S'>Password changed.</div><hr><a class='btnlink' href='/'>Back</a>"));
       });
-      server.on("/logout", HTTP_GET, [&]() {
-        authUntil = 0;
-        server.sendHeader("Location", "/login", true);
-        server.send(302, "text/plain", "");
+      // Matches pfsense-status-esp32's eraseAllAndReboot() (config_portal.cpp:651)
+      // - wipes everything (our own NVS settings namespace + WiFiManager's
+      // saved STA credentials) and reboots. PicoWatch has no Telegram
+      // config to preserve like pfsense's version does, so there's nothing
+      // to exclude - genuinely erases all of it.
+      server.on("/config-erase", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        server.send(200, "text/html",
+                     themedPage("Config Erase", "<div class='msg S'><strong>Config erased.</strong><br/>Rebooting&hellip;</div>"));
+        server.client().stop();
+        delay(500);
+        Preferences prefs;
+        prefs.begin(kPrefsNamespace, false);
+        prefs.clear();
+        prefs.end();
+        wifiManager.resetSettings();
+        delay(500);
+        ESP.restart();
       });
       server.on("/github-update", HTTP_POST, [&]() {
-        if (!requireAuth()) return;
+        if (!wifiManager.handleRequest()) return;
         server.send(200, "text/html",
                      themedPage("Online Update",
                                 "<div class='msg P'>Starting GitHub update check&hellip;<br/>"
                                 "Watch the device screen for progress.</div>"));
         updateFromGithub(); // blocking; reboots on success, falls through here on failure
       });
+      // Dedicated page for the file-upload form, matching pfsense-status-
+      // esp32's pattern of one button per menu item, each navigating to
+      // its own page - not everything crammed into the menu block itself.
+      server.on("/file-update-page", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        server.send(200, "text/html",
+                     themedPage("File Update",
+                                "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
+                                "<input type='file' name='update' accept='.bin'>"
+                                "<button type='submit'>Upload &amp; Flash</button></form>"
+                                "<hr><a class='btnlink' href='/'>Back</a>"));
+      });
+      // Shared between the two /file-update lambdas below (the upload
+      // callback always runs first for a multipart POST, before the main
+      // handler) - set once per request so the main handler doesn't need
+      // to call handleRequest() a second time (it already sent the
+      // redirect response itself if unauthenticated; a second call would
+      // try to send another response on top of that).
+      static bool uploadAuthorized = false;
       server.on(
           "/file-update", HTTP_POST,
           [&]() {
-            if (!requireAuth()) return;
+            if (!uploadAuthorized) return; // already redirected in the upload callback
             server.sendHeader("Connection", "close");
             const bool ok = !Update.hasError();
             server.send(200, "text/html",
@@ -3797,16 +4904,17 @@ void PicoWatch::setupWifi() {
           },
           [&]() {
             // Runs (and streams straight into the OTA partition) BEFORE
-            // the main handler above gets a chance to run requireAuth() -
-            // checking auth only there would let an unauthenticated
-            // request's file bytes reach Update.write() regardless of the
-            // final response. Gate it here too.
-            static bool uploadAuthorized = false;
+            // the main handler above gets a chance to run - checking auth
+            // only there would let an unauthenticated request's file
+            // bytes reach Update.write() regardless of the final
+            // response. Gate it here too, matching the original code's
+            // reasoning (see git history) even though the auth mechanism
+            // underneath changed.
             HTTPUpload &upload = server.upload();
             if (upload.status == UPLOAD_FILE_START) {
-              uploadAuthorized = isAuthed();
-              if (!uploadAuthorized) return;
-              display.fillScreen(GxEPD_BLACK);
+              uploadAuthorized = wifiManager.handleRequest();
+              if (!uploadAuthorized) return; // handleRequest() already sent the redirect
+              display.fillScreen(uiBgColor());
               display.setCursor(0, 30);
               display.println(PW_WIFI_RECEIVING_UPDATE_1);
               display.println(PW_WIFI_RECEIVING_UPDATE_2);
@@ -3819,43 +4927,459 @@ void PicoWatch::setupWifi() {
             }
           });
 
+      // ---- Watch Settings (web mirror of the on-device Settings menu) ----
+      // Jan asked for every on-device setting - not just WiFi/Firmware
+      // Update - to also be reachable from the web UI, one page per
+      // Settings/Time-submenu entry, same "each button navigates to its own
+      // page" pattern as the rest of this file. Each handler reads/writes
+      // the exact same RTC_DATA_ATTR globals + load*/save*() NVS helpers
+      // the on-device interactive pickers (showButtonSettings() etc.) use,
+      // so the two stay in sync automatically.
+      server.on("/watch-settings", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String body;
+        body += "<form method='GET' action='/settings/time'><button>Time</button></form>";
+        body += "<form method='GET' action='/settings/alarm'><button>Alarm</button></form>";
+        body += "<form method='GET' action='/settings/internet-access'><button>Internet Access</button></form>";
+        body += "<form method='GET' action='/settings/hostname'><button>WiFi Hostname</button></form>";
+        body += "<form method='GET' action='/settings/notifications'><button>Notification Settings</button></form>";
+        body += "<form method='GET' action='/settings/city'><button>Weather City</button></form>";
+        body += "<form method='GET' action='/settings/buttons'><button>Button Settings</button></form>";
+        body += "<form method='GET' action='/settings/fontsize'><button>Font Size</button></form>";
+        body += "<form method='GET' action='/settings/invertmenu'><button>Invert Menu</button></form>";
+        body += "<form method='GET' action='/settings/language'><button>Language</button></form>";
+        body += "<form method='GET' action='/settings/debug'><button>Debug</button></form>";
+        if (webFaceCount() > 0) {
+          body += "<form method='GET' action='/settings/watchface'><button>Change Watchface</button></form>";
+        }
+        body += "<hr><a class='btnlink' href='/'>Back</a>";
+        server.send(200, "text/html", themedPage("Watch Settings", body));
+      });
+
+      server.on("/settings/debug", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String body;
+        body += "<form method='POST' action='/settings/buzz'><button>Vibrate Motor Test</button></form>";
+        body += "<form method='GET' action='/settings/accelerometer'><button>Show Accelerometer</button></form>";
+        body += "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
+        server.send(200, "text/html", themedPage("Debug", body));
+      });
+
+      server.on("/settings/time", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String body;
+        body += "<form method='GET' action='/settings/set-time'><button>Set Time</button></form>";
+        body += "<form method='POST' action='/settings/sync-ntp'><button>Sync NTP</button></form>";
+        body += "<form method='GET' action='/settings/timezone'><button>Set Timezone</button></form>";
+        body += "<form method='GET' action='/settings/vibrate-window'><button>Vibrate Window</button></form>";
+        body += "<form method='GET' action='/settings/notify-interval'><button>Check Interval</button></form>";
+        body += "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
+        server.send(200, "text/html", themedPage("Time", body));
+      });
+
+      server.on("/settings/set-time", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        RTC.read(currentTime);
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "<form method='POST' action='/settings/set-time'>"
+                 "Year<br><input type='number' name='y' min='2000' max='2099' value='%d'><br>"
+                 "Month<br><input type='number' name='mo' min='1' max='12' value='%d'><br>"
+                 "Day<br><input type='number' name='d' min='1' max='31' value='%d'><br>"
+                 "Hour<br><input type='number' name='h' min='0' max='23' value='%d'><br>"
+                 "Minute<br><input type='number' name='mi' min='0' max='59' value='%d'><br>"
+                 "<button type='submit'>Save</button></form>"
+                 "<hr><a class='btnlink' href='/settings/time'>Back</a>",
+                 tmYearToCalendar(currentTime.Year), currentTime.Month, currentTime.Day,
+                 currentTime.Hour, currentTime.Minute);
+        server.send(200, "text/html", themedPage("Set Time", buf));
+      });
+      server.on("/settings/set-time", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        tmElements_t tm;
+        tm.Year = CalendarYrToTm(server.arg("y").toInt());
+        tm.Month = constrain(server.arg("mo").toInt(), 1, 12);
+        tm.Day = constrain(server.arg("d").toInt(), 1, 31);
+        tm.Hour = constrain(server.arg("h").toInt(), 0, 23);
+        tm.Minute = constrain(server.arg("mi").toInt(), 0, 59);
+        tm.Second = 0;
+        RTC.set(tm);
+        server.send(200, "text/html", savedPage("Set Time", "/settings/time", "Time saved."));
+      });
+
+      server.on("/settings/sync-ntp", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        const bool ok = syncNTP(); // already connected - no connectWiFi()/teardown needed here
+        server.send(200, "text/html",
+                     themedPage("Sync NTP",
+                                String(ok ? "<div class='msg S'>NTP sync OK.</div>"
+                                          : "<div class='msg D'>NTP sync failed.</div>") +
+                                    "<hr><a class='btnlink' href='/settings/time'>Back</a>"));
+      });
+
+      server.on("/settings/timezone", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String body = "<form method='POST' action='/settings/timezone'><select name='tz'>";
+        for (long off = kGmtOffsetMinSec; off <= kGmtOffsetMaxSec; off += kGmtOffsetStepSec) {
+          char label[16];
+          const long absOff = off < 0 ? -off : off;
+          snprintf(label, sizeof(label), "GMT%c%02ld:%02ld", off < 0 ? '-' : '+', absOff / 3600,
+                    (absOff % 3600) / 60);
+          body += "<option value='" + String(off) + "'" + (off == gmtOffset ? " selected" : "") + ">" +
+                  label + "</option>";
+        }
+        body += "</select><br><button type='submit'>Save</button></form>"
+                "<hr><a class='btnlink' href='/settings/time'>Back</a>";
+        server.send(200, "text/html", themedPage("Set Timezone", body));
+      });
+      server.on("/settings/timezone", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        gmtOffset = constrain(server.arg("tz").toInt(), kGmtOffsetMinSec, kGmtOffsetMaxSec);
+        saveManualGmtOffset(gmtOffset);
+        server.send(200, "text/html", savedPage("Set Timezone", "/settings/time", "Timezone saved."));
+      });
+
+      server.on("/settings/vibrate-window", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "<form method='POST' action='/settings/vibrate-window'>"
+                 "From hour<br><input type='number' name='f' min='0' max='23' value='%d'><br>"
+                 "To hour<br><input type='number' name='t' min='0' max='23' value='%d'><br>"
+                 "<label><input type='checkbox' name='on' value='1'%s> Enabled</label><br>"
+                 "<button type='submit'>Save</button></form>"
+                 "<hr><a class='btnlink' href='/settings/time'>Back</a>",
+                 vibrateWindowFromHour, vibrateWindowToHour, vibrateWindowEnabled ? " checked" : "");
+        server.send(200, "text/html", themedPage("Vibrate Window", buf));
+      });
+      server.on("/settings/vibrate-window", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        vibrateWindowFromHour = constrain(server.arg("f").toInt(), 0, 23);
+        vibrateWindowToHour = constrain(server.arg("t").toInt(), 0, 23);
+        vibrateWindowEnabled = server.hasArg("on");
+        saveVibrateWindow();
+        server.send(200, "text/html", savedPage("Vibrate Window", "/settings/time"));
+      });
+
+      server.on("/settings/notify-interval", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        char buf[384];
+        snprintf(buf, sizeof(buf),
+                 "<form method='POST' action='/settings/notify-interval'>"
+                 "Minutes (1-10)<br><input type='number' name='m' min='1' max='10' value='%d'><br>"
+                 "<button type='submit'>Save</button></form>"
+                 "<hr><a class='btnlink' href='/settings/time'>Back</a>",
+                 bleNotifyIntervalMin);
+        server.send(200, "text/html", themedPage("Check Interval", buf));
+      });
+      server.on("/settings/notify-interval", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        bleNotifyIntervalMin = constrain(server.arg("m").toInt(), 1, 10);
+        saveNotifyInterval();
+        server.send(200, "text/html", savedPage("Check Interval", "/settings/time"));
+      });
+
+      server.on("/settings/alarm", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "<form method='POST' action='/settings/alarm'>"
+                 "Hour<br><input type='number' name='h' min='0' max='23' value='%d'><br>"
+                 "Minute<br><input type='number' name='m' min='0' max='59' value='%d'><br>"
+                 "<label><input type='checkbox' name='on' value='1'%s> Enabled</label><br>"
+                 "<button type='submit'>Save</button></form>"
+                 "<hr><a class='btnlink' href='/watch-settings'>Back</a>",
+                 alarmHour, alarmMinute, alarmEnabled ? " checked" : "");
+        server.send(200, "text/html", themedPage("Alarm", buf));
+      });
+      server.on("/settings/alarm", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        alarmHour = constrain(server.arg("h").toInt(), 0, 23);
+        alarmMinute = constrain(server.arg("m").toInt(), 0, 59);
+        alarmEnabled = server.hasArg("on");
+        saveAlarm();
+        server.send(200, "text/html", savedPage("Alarm", "/watch-settings"));
+      });
+
+      server.on("/settings/city", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String body = "<form method='POST' action='/settings/city'>"
+                      "OpenWeatherMap City ID<br>"
+                      "<input type='text' name='c' maxlength='7' pattern='[0-9]{1,7}' value='" +
+                      String(weatherCityID) + "'><br><button type='submit'>Save</button></form>"
+                      "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
+        server.send(200, "text/html", themedPage("Weather City", body));
+      });
+      server.on("/settings/city", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String cid = server.arg("c");
+        cid.trim();
+        if (cid.length() > 0) {
+          strncpy(weatherCityID, cid.c_str(), sizeof(weatherCityID) - 1);
+          weatherCityID[sizeof(weatherCityID) - 1] = '\0';
+          saveWeatherCityID(weatherCityID);
+          weatherIntervalCounter = -1; // force a fresh weather fetch for the new city
+        }
+        server.send(200, "text/html", savedPage("Weather City", "/watch-settings"));
+      });
+
+      server.on("/settings/buttons", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        auto actionSelect = [](const char *name, uint8_t current) {
+          String s = "<select name='" + String(name) + "'>";
+          for (int i = 0; i < WATCHFACE_ACTION_COUNT; i++) {
+            s += "<option value='" + String(i) + "'" + (i == current ? " selected" : "") + ">" +
+                 watchfaceActionName(i) + "</option>";
+          }
+          s += "</select><br>";
+          return s;
+        };
+        String body = "<form method='POST' action='/settings/buttons'>";
+        body += "<label><input type='checkbox' name='swap' value='1'" +
+                String(menuBackSwapped ? " checked" : "") + "> Swap Menu/Back</label><br>";
+        body += "Up short press<br>" + actionSelect("us", watchfaceUpShortAction);
+        body += "Up long press<br>" + actionSelect("ul", watchfaceUpLongAction);
+        body += "Down short press<br>" + actionSelect("ds", watchfaceDownShortAction);
+        body += "Down long press<br>" + actionSelect("dl", watchfaceDownLongAction);
+        body += "<button type='submit'>Save</button></form>"
+                "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
+        server.send(200, "text/html", themedPage("Button Settings", body));
+      });
+      server.on("/settings/buttons", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        menuBackSwapped = server.hasArg("swap");
+        watchfaceUpShortAction = constrain(server.arg("us").toInt(), 0, WATCHFACE_ACTION_COUNT - 1);
+        watchfaceUpLongAction = constrain(server.arg("ul").toInt(), 0, WATCHFACE_ACTION_COUNT - 1);
+        watchfaceDownShortAction = constrain(server.arg("ds").toInt(), 0, WATCHFACE_ACTION_COUNT - 1);
+        watchfaceDownLongAction = constrain(server.arg("dl").toInt(), 0, WATCHFACE_ACTION_COUNT - 1);
+        saveButtonSettings();
+        server.send(200, "text/html", savedPage("Button Settings", "/watch-settings"));
+      });
+
+      server.on("/settings/fontsize", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String body = "<form method='POST' action='/settings/fontsize'><select name='s'>";
+        for (int i = 0; i < UI_FONT_SIZE_COUNT; i++) {
+          body += "<option value='" + String(i) + "'" + (i == uiFontSize ? " selected" : "") + ">" +
+                  fontSizeName(i) + "</option>";
+        }
+        body += "</select><br><button type='submit'>Save</button></form>"
+                "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
+        server.send(200, "text/html", themedPage("Font Size", body));
+      });
+      server.on("/settings/fontsize", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        uiFontSize = constrain(server.arg("s").toInt(), 0, UI_FONT_SIZE_COUNT - 1);
+        saveFontSize();
+        server.send(200, "text/html", savedPage("Font Size", "/watch-settings"));
+      });
+
+      server.on("/settings/invertmenu", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String body = "<form method='POST' action='/settings/invertmenu'>"
+                      "<label><input type='checkbox' name='inv' value='1'" +
+                      String(menuInverted ? " checked" : "") + "> Inverted (black on white)</label><br>"
+                      "<button type='submit'>Save</button></form>"
+                      "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
+        server.send(200, "text/html", themedPage("Invert Menu", body));
+      });
+      server.on("/settings/invertmenu", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        menuInverted = server.hasArg("inv");
+        saveMenuInverted();
+        server.send(200, "text/html", savedPage("Invert Menu", "/watch-settings"));
+      });
+
+      server.on("/settings/internet-access", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String body = "<form method='POST' action='/settings/internet-access'>"
+                      "<label><input type='checkbox' name='ble' value='1'" +
+                      String(internetAccessMode == INTERNET_ACCESS_BLE ? " checked" : "") +
+                      "> Use Bluetooth (via Gadgetbridge) instead of WiFi</label><br>"
+                      "<button type='submit'>Save</button></form>"
+                      "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
+        server.send(200, "text/html", themedPage("Internet Access", body));
+      });
+      server.on("/settings/internet-access", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        internetAccessMode = server.hasArg("ble") ? INTERNET_ACCESS_BLE : INTERNET_ACCESS_WIFI;
+        saveInternetAccessMode();
+        server.send(200, "text/html", savedPage("Internet Access", "/watch-settings"));
+      });
+
+      server.on("/settings/hostname", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "<form method='POST' action='/settings/hostname'>"
+                 "Hostname (letters/digits/hyphen, empty = device default)<br>"
+                 "<input type='text' name='h' maxlength='%d' value='%s'><br>"
+                 "<button type='submit'>Save</button></form>"
+                 "<hr><a class='btnlink' href='/watch-settings'>Back</a>"
+                 "<p><small>Takes effect on the next WiFi connect, not the current session.</small></p>",
+                 (int)sizeof(picoWatchHostname) - 1, picoWatchHostname);
+        server.send(200, "text/html", themedPage("WiFi Hostname", buf));
+      });
+      server.on("/settings/hostname", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String h = server.arg("h");
+        h.trim();
+        // DNS/mDNS-safe subset only - anything else (spaces, punctuation)
+        // silently becomes a hyphen rather than producing a hostname that
+        // half of home routers would mangle or reject outright.
+        for (size_t i = 0; i < h.length(); i++) {
+          const char c = h[i];
+          if (!isalnum((unsigned char)c) && c != '-') h.setCharAt(i, '-');
+        }
+        strncpy(picoWatchHostname, h.c_str(), sizeof(picoWatchHostname) - 1);
+        picoWatchHostname[sizeof(picoWatchHostname) - 1] = '\0';
+        saveHostname(picoWatchHostname);
+        server.send(200, "text/html", savedPage("WiFi Hostname", "/watch-settings"));
+      });
+
+      server.on("/settings/notifications", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        char buf[640];
+        snprintf(buf, sizeof(buf),
+                 "<form method='POST' action='/settings/notifications'>"
+                 "<label><input type='checkbox' name='popup' value='1'%s> Show popup</label><br>"
+                 "Popup duration (%d-%ds)<br><input type='number' name='dur' min='%d' max='%d' step='%d' value='%d'><br>"
+                 "<label><input type='checkbox' name='icon' value='1'%s> Show watchface icon</label><br>"
+                 "<label><input type='checkbox' name='light' value='1'%s> Icon color: light (unchecked = dark)</label><br>"
+                 "<button type='submit'>Save</button></form>"
+                 "<hr><a class='btnlink' href='/watch-settings'>Back</a>",
+                 notificationPopupEnabled ? " checked" : "",
+                 NOTIFICATION_POPUP_DURATION_MIN_S, NOTIFICATION_POPUP_DURATION_MAX_S,
+                 NOTIFICATION_POPUP_DURATION_MIN_S, NOTIFICATION_POPUP_DURATION_MAX_S,
+                 NOTIFICATION_POPUP_DURATION_STEP_S, notificationPopupDurationS,
+                 notificationIconEnabled ? " checked" : "",
+                 notificationIconLight ? " checked" : "");
+        server.send(200, "text/html", themedPage("Notification Settings", buf));
+      });
+      server.on("/settings/notifications", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        notificationPopupEnabled = server.hasArg("popup");
+        notificationPopupDurationS = constrain(server.arg("dur").toInt(),
+                                                NOTIFICATION_POPUP_DURATION_MIN_S,
+                                                NOTIFICATION_POPUP_DURATION_MAX_S);
+        notificationIconEnabled = server.hasArg("icon");
+        notificationIconLight = server.hasArg("light");
+        saveNotificationSettings();
+        server.send(200, "text/html", savedPage("Notification Settings", "/watch-settings"));
+      });
+
+      server.on("/settings/language", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String body = "<form method='POST' action='/settings/language'><select name='l'>";
+        for (int i = 0; i < PW_LANG_COUNT; i++) {
+          body += "<option value='" + String(i) + "'" + (i == picowatchLanguage ? " selected" : "") + ">" +
+                  pwLanguageName(i) + "</option>";
+        }
+        body += "</select><br><button type='submit'>Save</button></form>"
+                "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
+        server.send(200, "text/html", themedPage("Language", body));
+      });
+      server.on("/settings/language", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        picowatchLanguage = constrain(server.arg("l").toInt(), 0, PW_LANG_COUNT - 1);
+        saveLanguage();
+        server.send(200, "text/html", savedPage("Language", "/watch-settings"));
+      });
+
+      server.on("/settings/buzz", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        vibMotor();
+        server.send(200, "text/html", savedPage("Vibrate Motor Test", "/settings/debug", "Buzzed."));
+      });
+
+      server.on("/settings/accelerometer", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        Accel acc;
+        const bool ok = sensor.getAccel(acc);
+        String body;
+        if (!ok) {
+          body = "<div class='msg D'>Read failed.</div>";
+        } else {
+          const char *dirName;
+          switch (sensor.getDirection()) {
+          case DIRECTION_DISP_DOWN: dirName = "Face Down"; break;
+          case DIRECTION_DISP_UP: dirName = "Face Up"; break;
+          case DIRECTION_BOTTOM_EDGE: dirName = "Bottom Edge"; break;
+          case DIRECTION_TOP_EDGE: dirName = "Top Edge"; break;
+          case DIRECTION_RIGHT_EDGE: dirName = "Right Edge"; break;
+          case DIRECTION_LEFT_EDGE: dirName = "Left Edge"; break;
+          default: dirName = "Unknown"; break;
+          }
+          body = "<div class='msg'>X: " + String(acc.x) + "<br>Y: " + String(acc.y) + "<br>Z: " +
+                 String(acc.z) + "<br>Direction: " + dirName + "</div>";
+        }
+        // Snapshot, not the on-device live-updating loop (showAccelerometer())
+        // - a static page can't redraw itself as the watch tilts, so this
+        // reads once per request instead; "Read again" just re-requests it.
+        body += "<form method='GET' action='/settings/accelerometer'><button>Read again</button></form>"
+                "<hr><a class='btnlink' href='/settings/debug'>Back</a>";
+        server.send(200, "text/html", themedPage("Accelerometer", body));
+      });
+
+      if (webFaceCount() > 0) {
+        server.on("/settings/watchface", HTTP_GET, [&]() {
+          if (!wifiManager.handleRequest()) return;
+          String body = "<form method='POST' action='/settings/watchface'><select name='f'>";
+          for (int i = 0; i < webFaceCount(); i++) {
+            body += "<option value='" + String(i) + "'" + (i == webSelectedFace() ? " selected" : "") + ">" +
+                    webFaceName(i) + "</option>";
+          }
+          body += "</select><br><button type='submit'>Save</button></form>"
+                  "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
+          server.send(200, "text/html", themedPage("Watchface", body));
+        });
+        server.on("/settings/watchface", HTTP_POST, [&]() {
+          if (!wifiManager.handleRequest()) return;
+          webSetFace(server.arg("f").toInt());
+          server.send(200, "text/html", savedPage("Watchface", "/watch-settings"));
+        });
+      }
+
       // Once connected, WiFiManager's own root page ("/") becomes our
-      // app's home screen: a minimal stock menu (just "wifi") plus our own
-      // buttons injected via setCustomMenuHTML() - the actual mechanism
-      // pfsense-status-esp32 uses (buildCustomMenuHtml() there).
+      // app's home screen: stock menu items (WiFi/Info/Restart) plus our
+      // own buttons injected via setCustomMenuHTML() - ported structurally
+      // 1:1 from pfsense-status-esp32's buildCustomMenuHtml()/
+      // applyPortalCustomHtml() (config_portal.cpp): one <form><button>
+      // per action, each navigating to its own page, instead of
+      // everything crammed into one block.
       //
       // The actual bug (found 06.08.2026): WiFiManager's handleRoot() only
       // appends _customMenuHTML when the menu list passed to setMenu()
       // contains the literal token "custom" (WiFiManager.cpp ~line 1443) -
       // pfsense-status-esp32's own config_portal.cpp:784 fullMenu[] array
-      // includes it explicitly ({"wifi", "param", "info", "custom",
-      // "restart", "sep"}), but our port only had "wifi", so our whole
-      // Firmware Update section/buttons silently never rendered - visitors
-      // only ever saw WiFiManager's bare stock "Configure WiFi" page.
-      static std::vector<const char *> kConnectedMenuIds = {"custom", "wifi"};
+      // includes it explicitly, but our first port only had "wifi", so our
+      // whole Firmware Update section/buttons silently never rendered.
+      static std::vector<const char *> kConnectedMenuIds = {"wifi", "info", "custom", "restart"};
       wifiManager.setMenu(kConnectedMenuIds);
-      // setCustomMenuHTML() only stores the raw const char* pointer, not a
-      // copy (WiFiManager.cpp: `_customMenuHTML = html;`) - it's read fresh
-      // on every single HTTP request for as long as the web portal stays
-      // up (up to WIFI_STAY_CONNECTED_TIMEOUT later). A local Arduino
-      // String's backing buffer isn't guaranteed that stable across
-      // everything that runs in between (heap churn from the polling loop
-      // below, other String temporaries elsewhere in this same function,
-      // etc.) - a `static` fixed buffer has no such lifetime question, its
-      // address never changes for as long as the program runs.
-      static char fullMenuBuf[512];
-      snprintf(fullMenuBuf, sizeof(fullMenuBuf),
-               "<div class='msg S'><strong>Connected</strong> to %s</div>"
-               "<h3>Firmware Update</h3><hr>"
-               "<form method='POST' action='/github-update'>"
-               "<button type='submit'>Check for Online Update</button></form>"
-               "<hr>"
-               "<form method='POST' action='/file-update' enctype='multipart/form-data'>"
-               "<input type='file' name='update' accept='.bin'>"
-               "<button type='submit'>Upload &amp; Flash (File Update)</button></form>"
-               "<hr><a href='/change-password'>Change Password</a> &middot; <a href='/logout'>Logout</a>",
-               lastSSID);
-      wifiManager.setCustomMenuHTML(fullMenuBuf);
+      // Info page cleanup (Jan, 15.08.2026): he wanted to keep the actual
+      // diagnostic content but not WiFiManager's own bundled "Erase"/
+      // "Update" (OTA firmware upload - unrelated to our GitHub Update
+      // flow, would let anyone on the network flash arbitrary firmware)
+      // buttons, and wanted a way back to the menu, which WiFiManager's
+      // Info/WiFi/etc. pages don't show by default.
+      wifiManager.setShowInfoErase(false);
+      wifiManager.setShowInfoUpdate(false);
+      wifiManager.setShowBack(true);
+      // NOT setCustomStatusHTML() - WiFiManager already renders its own
+      // native "Connected to X, with IP Y" status (wm_strings_en.h's
+      // HTTP_STATUS_ON) on every page automatically; setCustomStatusHTML()
+      // appends "below" that, not replacing it, so this was ALWAYS a
+      // redundant second, less-informative (no IP) status box stacked
+      // directly under the real one - Jan noticed it duplicated on every
+      // page (15.08.2026, screenshot showed both "Connected to t800 with
+      // IP..." and a second bare "Connected to t800" underneath).
+      gCustomMenuHtml = "<form method='GET' action='/watch-settings'><button>Watch Settings</button></form>";
+      gCustomMenuHtml += "<form method='POST' action='/github-update'><button>Check for Online Update</button></form>";
+      gCustomMenuHtml += "<form method='GET' action='/file-update-page'><button>File Update</button></form>";
+      gCustomMenuHtml += "<form method='GET' action='/change-password'><button>Change Password</button></form>";
+      gCustomMenuHtml += "<form method='POST' action='/config-erase' onsubmit=\"return confirm('Erase all settings and reboot?');\">"
+                         "<button style='background:#dc3630;color:#fff'>Config Erase</button></form>";
+      wifiManager.setCustomMenuHTML(gCustomMenuHtml.c_str());
     }
 
     unsigned long connectedAt = millis();
@@ -3880,9 +5404,9 @@ void PicoWatch::setupWifi() {
 
 void PicoWatch::_configModeCallback(WiFiManager *myWiFiManager) {
   display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
+  display.fillScreen(uiBgColor());
+  display.setFont(uiMenuFont());
+  display.setTextColor(uiFgColor());
   display.setCursor(0, 30);
   display.println(PW_WIFI_AP_CONNECT_TO);
   display.print(PW_WIFI_AP_SSID_LABEL);
@@ -3914,118 +5438,12 @@ bool PicoWatch::connectWiFi() {
   }
   return WIFI_CONFIGURED;
 }
-/*
-void PicoWatch::showUpdateFW() {
-  display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
-  display.setCursor(0, 30);
-  display.println("Please visit");
-  display.println("watchy.sqfmi.com");
-  display.println("with a Bluetooth");
-  display.println("enabled device");
-  display.println(" ");
-  display.println("Press menu button");
-  display.println("again when ready");
-  display.println(" ");
-  display.println("Keep USB powered");
-  display.display(false); // full refresh
 
-  guiState = FW_UPDATE_STATE;
-}
-
-void PicoWatch::updateFWBegin() {
-  display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
-  display.setCursor(0, 30);
-  display.println("Bluetooth Started");
-  display.println(" ");
-  display.println("PicoWatch BLE OTA");
-  display.println(" ");
-  display.println("Waiting for");
-  display.println("connection...");
-  display.display(false); // full refresh
-
-  BLE BT;
-  BT.begin("PicoWatch BLE OTA");
-  int prevStatus = -1;
-  int currentStatus;
-
-  while (1) {
-    currentStatus = BT.updateStatus();
-    if (prevStatus != currentStatus || prevStatus == 1) {
-      if (currentStatus == 0) {
-        display.setFullWindow();
-        display.fillScreen(GxEPD_BLACK);
-        display.setFont(&FreeMonoBold9pt7b);
-        display.setTextColor(GxEPD_WHITE);
-        display.setCursor(0, 30);
-        display.println("BLE Connected!");
-        display.println(" ");
-        display.println("Waiting for");
-        display.println("upload...");
-        display.display(false); // full refresh
-      }
-      if (currentStatus == 1) {
-        display.setFullWindow();
-        display.fillScreen(GxEPD_BLACK);
-        display.setFont(&FreeMonoBold9pt7b);
-        display.setTextColor(GxEPD_WHITE);
-        display.setCursor(0, 30);
-        display.println("Downloading");
-        display.println("firmware:");
-        display.println(" ");
-        display.print(BT.howManyBytes());
-        display.println(" bytes");
-        display.display(true); // partial refresh
-      }
-      if (currentStatus == 2) {
-        display.setFullWindow();
-        display.fillScreen(GxEPD_BLACK);
-        display.setFont(&FreeMonoBold9pt7b);
-        display.setTextColor(GxEPD_WHITE);
-        display.setCursor(0, 30);
-        display.println("Download");
-        display.println("completed!");
-        display.println(" ");
-        display.println("Rebooting...");
-        display.display(false); // full refresh
-
-        delay(2000);
-        esp_restart();
-      }
-      if (currentStatus == 4) {
-        display.setFullWindow();
-        display.fillScreen(GxEPD_BLACK);
-        display.setFont(&FreeMonoBold9pt7b);
-        display.setTextColor(GxEPD_WHITE);
-        display.setCursor(0, 30);
-        display.println("BLE Disconnected!");
-        display.println(" ");
-        display.println("exiting...");
-        display.display(false); // full refresh
-        delay(1000);
-        break;
-      }
-      prevStatus = currentStatus;
-    }
-    delay(100);
-  }
-
-  // turn off radios
-  WiFi.mode(WIFI_OFF);
-  btStop();
-  showMenu(menuIndex, false);
-}
-*/
 void PicoWatch::showSyncNTP() {
   display.setFullWindow();
-  display.fillScreen(GxEPD_BLACK);
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setTextColor(GxEPD_WHITE);
+  display.fillScreen(uiBgColor());
+  display.setFont(uiMenuFont());
+  display.setTextColor(uiFgColor());
   display.setCursor(0, 30);
   display.println(PW_NTP_SYNCING);
   display.print(PW_NTP_GMT_OFFSET);
@@ -4065,6 +5483,19 @@ void PicoWatch::showSyncNTP() {
   display.display(true); // full refresh
   delay(3000);
   showTimeMenu(timeMenuIndex, false);
+}
+
+bool PicoWatch::_syncTimeViaBle(long gmt) {
+  String payload;
+  if (!_httpViaBle(BLE_TIME_API_URL, payload)) return false;
+  JSONVar responseObject = JSON.parse(payload);
+  if (JSON.typeof(responseObject) != "object" || !responseObject.hasOwnProperty("unixtime")) {
+    return false;
+  }
+  tmElements_t tm;
+  breakTime((time_t)((long)responseObject["unixtime"] + gmt), tm);
+  RTC.set(tm);
+  return true;
 }
 
 bool PicoWatch::syncNTP() { // NTP sync - call after connecting to WiFi and
