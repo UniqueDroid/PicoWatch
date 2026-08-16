@@ -43,7 +43,12 @@ constexpr const char *kPrefsFaceKey = "face";
 void MultiFacePicoWatch::onReset() {
   Preferences prefs;
   prefs.begin(kPrefsNamespace, true);  // read-only
-  selectedFace = prefs.getInt(kPrefsFaceKey, 0);
+  // Default (no "face" key saved yet, i.e. a fresh device or one that's
+  // never opened the watchface picker) is "7 Segment Hell" (index 1), not
+  // "Basic" (index 0) - Jan wanted it as the new default (16.08.2026).
+  // Only affects devices/reflashes with no saved pick yet; an existing
+  // saved choice is unaffected.
+  selectedFace = prefs.getInt(kPrefsFaceKey, 1);
   prefs.end();
   if (selectedFace < 0 || selectedFace >= FACE_COUNT) selectedFace = 0;
 }
@@ -231,7 +236,15 @@ void MultiFacePicoWatch::draw7Seg() {
 
 void MultiFacePicoWatch::draw7SegTime() {
   display.setFont(&DSEG7_Classic_Bold_53);
-  display.setCursor(5, 53 + 5);
+  // Baseline nudged from 53+5 to 53+17 (16.08.2026, Jan's screenshot) -
+  // the notification envelope icon (_drawNotificationIndicator(), fixed
+  // at y=3..16, horizontally centered like the clock's colon) overlapped
+  // the top of the digits/colon at the old baseline. The icon is already
+  // pinned essentially at the top edge of the display, nowhere left to
+  // move it further up, so the clock moves down instead - 12px, just
+  // enough clearance without eating too far into the gap above the
+  // weekday/month row drawn by draw7SegDate() right below it.
+  display.setCursor(5, 53 + 17);
   int displayHour;
   if (HOUR_12_24 == 12) {
     displayHour = ((currentTime.Hour + 11) % 12) + 1;

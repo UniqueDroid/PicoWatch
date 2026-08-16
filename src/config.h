@@ -173,7 +173,7 @@
 #define DEBUG_MENU_STATE    6
 #define MENU_HEIGHT     25
 #define MENU_LENGTH     8           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Weather, Notifications, Games, Settings
-#define SETTINGS_MENU_LENGTH 13     // About, Time, WiFi, Internet Access, Notification Settings, Vibration, Set City, Online Update, Button Settings, Font Size, Invert Menu, Language, Debug
+#define SETTINGS_MENU_LENGTH 14     // About, Time, WiFi, Internet Access, Notification Settings, Vibration, Set City, Online Update, Button Settings, Font Size, Invert Menu, Language, Debug, Power
 #define GAMES_MENU_LENGTH 4         // Snake, Pong, Tetris, Flappy
 #define TIME_MENU_LENGTH 5          // Set Time, Sync NTP, Set Timezone, Vibrate Window, Notify Interval
 #define DEBUG_MENU_LENGTH 2         // Vibrate Motor, Show Accelerometer
@@ -313,8 +313,8 @@
 // (_getWeatherData()) unless the user set one manually (setTimezone()).
 #define BLE_TIME_API_URL "http://worldtimeapi.org/api/ip"
 #define SOFTWARE_VERSION_MAJOR 1
-#define SOFTWARE_VERSION_MINOR 2
-#define SOFTWARE_VERSION_PATCH 1
+#define SOFTWARE_VERSION_MINOR 3
+#define SOFTWARE_VERSION_PATCH 0
 #define HARDWARE_VERSION_MAJOR 1
 #define HARDWARE_VERSION_MINOR 0
 

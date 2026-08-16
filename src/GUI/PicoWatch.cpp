@@ -917,54 +917,58 @@ void PicoWatch::init(String datetime) {
   }
   deepSleep();
 }
-void PicoWatch::deepSleep() {
+void PicoWatch::deepSleep(bool indefinite) {
   display.hibernate();
   RTC.clearAlarm();        // resets the alarm flag in the RTC
   #ifdef ARDUINO_ESP32S3_DEV
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)USB_DET_PIN, USB_PLUGGED_IN ? LOW : HIGH); //// enable deep sleep wake on USB plug in/out
-  rtc_gpio_set_direction((gpio_num_t)USB_DET_PIN, RTC_GPIO_MODE_INPUT_ONLY);
-  rtc_gpio_pullup_en((gpio_num_t)USB_DET_PIN);
+  if (!indefinite) {
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)USB_DET_PIN, USB_PLUGGED_IN ? LOW : HIGH); //// enable deep sleep wake on USB plug in/out
+    rtc_gpio_set_direction((gpio_num_t)USB_DET_PIN, RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pullup_en((gpio_num_t)USB_DET_PIN);
+  }
 
   esp_sleep_enable_ext1_wakeup(
       BTN_PIN_MASK,
-      ESP_EXT1_WAKEUP_ANY_LOW); // enable deep sleep wake on button press
+      ESP_EXT1_WAKEUP_ANY_LOW); // enable deep sleep wake on button press - the only wakeup source left when indefinite
   rtc_gpio_set_direction((gpio_num_t)UP_BTN_PIN, RTC_GPIO_MODE_INPUT_ONLY);
   rtc_gpio_pullup_en((gpio_num_t)UP_BTN_PIN);
 
   rtc_clk_32k_enable(true);
   //rtc_clk_slow_freq_set(RTC_SLOW_FREQ_32K_XTAL);
-  struct tm timeinfo;
-  getLocalTime(&timeinfo);
-  int secToNextWake = 60 - timeinfo.tm_sec; // next full minute, as before
-  // NIGHT_SLEEP_AFTER_HOUR > NIGHT_SLEEP_BEFORE_HOUR means the night window
-  // spans midnight (e.g. 23 > 5 covers 23:00-04:59).
-  bool isNight = NIGHT_SLEEP_AFTER_HOUR > NIGHT_SLEEP_BEFORE_HOUR
-                     ? (timeinfo.tm_hour >= NIGHT_SLEEP_AFTER_HOUR ||
-                        timeinfo.tm_hour < NIGHT_SLEEP_BEFORE_HOUR)
-                     : (timeinfo.tm_hour >= NIGHT_SLEEP_AFTER_HOUR &&
-                        timeinfo.tm_hour < NIGHT_SLEEP_BEFORE_HOUR);
-  if (isNight && NIGHT_SLEEP_FOR_M > 1) {
-    // Align to minutes-since-midnight (not minutes-within-the-hour) so
-    // NIGHT_SLEEP_FOR_M=45 always lands on 00:00 exactly, regardless of
-    // which hour sleep started in - 00:00 is always a multiple of any
-    // interval, keeping _captureStepsAtMidnight()'s exact-minute check
-    // reliable even though most other wakes get skipped.
-    int minutesSinceMidnight = timeinfo.tm_hour * 60 + timeinfo.tm_min;
-    int extraMinutes =
-        NIGHT_SLEEP_FOR_M - 1 - (minutesSinceMidnight % NIGHT_SLEEP_FOR_M);
-    // Never sleep past an enabled alarm's target time, so it still fires
-    // even if it falls inside the night window.
-    if (alarmEnabled) {
-      int alarmMinutesSinceMidnight = alarmHour * 60 + alarmMinute;
-      int minutesUntilAlarm = alarmMinutesSinceMidnight - minutesSinceMidnight;
-      if (minutesUntilAlarm <= 0) minutesUntilAlarm += 24 * 60;
-      if (minutesUntilAlarm - 1 < extraMinutes) {
-        extraMinutes = minutesUntilAlarm - 1;
+  if (!indefinite) {
+    struct tm timeinfo;
+    getLocalTime(&timeinfo);
+    int secToNextWake = 60 - timeinfo.tm_sec; // next full minute, as before
+    // NIGHT_SLEEP_AFTER_HOUR > NIGHT_SLEEP_BEFORE_HOUR means the night window
+    // spans midnight (e.g. 23 > 5 covers 23:00-04:59).
+    bool isNight = NIGHT_SLEEP_AFTER_HOUR > NIGHT_SLEEP_BEFORE_HOUR
+                       ? (timeinfo.tm_hour >= NIGHT_SLEEP_AFTER_HOUR ||
+                          timeinfo.tm_hour < NIGHT_SLEEP_BEFORE_HOUR)
+                       : (timeinfo.tm_hour >= NIGHT_SLEEP_AFTER_HOUR &&
+                          timeinfo.tm_hour < NIGHT_SLEEP_BEFORE_HOUR);
+    if (isNight && NIGHT_SLEEP_FOR_M > 1) {
+      // Align to minutes-since-midnight (not minutes-within-the-hour) so
+      // NIGHT_SLEEP_FOR_M=45 always lands on 00:00 exactly, regardless of
+      // which hour sleep started in - 00:00 is always a multiple of any
+      // interval, keeping _captureStepsAtMidnight()'s exact-minute check
+      // reliable even though most other wakes get skipped.
+      int minutesSinceMidnight = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+      int extraMinutes =
+          NIGHT_SLEEP_FOR_M - 1 - (minutesSinceMidnight % NIGHT_SLEEP_FOR_M);
+      // Never sleep past an enabled alarm's target time, so it still fires
+      // even if it falls inside the night window.
+      if (alarmEnabled) {
+        int alarmMinutesSinceMidnight = alarmHour * 60 + alarmMinute;
+        int minutesUntilAlarm = alarmMinutesSinceMidnight - minutesSinceMidnight;
+        if (minutesUntilAlarm <= 0) minutesUntilAlarm += 24 * 60;
+        if (minutesUntilAlarm - 1 < extraMinutes) {
+          extraMinutes = minutesUntilAlarm - 1;
+        }
       }
+      secToNextWake += extraMinutes * 60;
     }
-    secToNextWake += extraMinutes * 60;
+    esp_sleep_enable_timer_wakeup(secToNextWake * uS_TO_S_FACTOR);
   }
-  esp_sleep_enable_timer_wakeup(secToNextWake * uS_TO_S_FACTOR);
   #else
   // Set GPIOs 0-39 to input to avoid power leaking out
   const uint64_t ignore = 0b11110001000000110000100111000010; // Ignore some GPIOs due to resets
@@ -973,11 +977,13 @@ void PicoWatch::deepSleep() {
       continue;
     pinMode(i, INPUT);
   }
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)RTC_INT_PIN,
-                               0); // enable deep sleep wake on RTC interrupt
+  if (!indefinite) {
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)RTC_INT_PIN,
+                                 0); // enable deep sleep wake on RTC interrupt
+  }
   esp_sleep_enable_ext1_wakeup(
       BTN_PIN_MASK,
-      ESP_EXT1_WAKEUP_ANY_HIGH); // enable deep sleep wake on button press
+      ESP_EXT1_WAKEUP_ANY_HIGH); // enable deep sleep wake on button press - the only wakeup source left when indefinite
   #endif
   esp_deep_sleep_start();
 }
@@ -1100,6 +1106,9 @@ void dispatchSettingsMenu(PicoWatch *w, int index) {
     break;
   case 12:
     w->showDebugMenu(debugMenuIndex, false);
+    break;
+  case 13:
+    w->showPowerMenu();
     break;
   default:
     break;
@@ -1461,7 +1470,7 @@ void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
                                  PW_SETTINGS_SET_CITY,        PW_SETTINGS_UPDATE_GITHUB,
                                  PW_SETTINGS_BUTTON_SETTINGS, PW_SETTINGS_FONT_SIZE,
                                  PW_SETTINGS_INVERT_MENU,     PW_SETTINGS_LANGUAGE,
-                                 PW_SETTINGS_DEBUG};
+                                 PW_SETTINGS_DEBUG,           PW_SETTINGS_POWER};
   uiRenderList(kItems, SETTINGS_MENU_LENGTH, settingsMenuIndex, partialRefresh);
   guiState = SETTINGS_MENU_STATE;
   alreadyInMenu = false;
@@ -1474,7 +1483,7 @@ void PicoWatch::showFastSettingsMenu(byte settingsMenuIndex) {
                                  PW_SETTINGS_SET_CITY,        PW_SETTINGS_UPDATE_GITHUB,
                                  PW_SETTINGS_BUTTON_SETTINGS, PW_SETTINGS_FONT_SIZE,
                                  PW_SETTINGS_INVERT_MENU,     PW_SETTINGS_LANGUAGE,
-                                 PW_SETTINGS_DEBUG};
+                                 PW_SETTINGS_DEBUG,           PW_SETTINGS_POWER};
   uiRenderList(kItems, SETTINGS_MENU_LENGTH, settingsMenuIndex, true);
   guiState = SETTINGS_MENU_STATE;
 }
@@ -1712,6 +1721,89 @@ void PicoWatch::showVibrationSettings() {
   }
 
   showSettingsMenu(settingsMenuIndex, false);
+}
+
+// Power menu (Settings -> "Power") - Restart/Shutdown, same 2-value cycle
+// shape as showVibrationSettings(), a full separate MENU_STATE felt like
+// overkill for a 2-item picker (16.08.2026, Jan asked for it directly).
+// "Shutdown" isn't a true power-off (ESP32 has no such state without
+// cutting external power) - it's deepSleep(true), which skips the
+// timer/USB/RTC wakeup sources entirely so only a button press brings it
+// back, same practical effect as "off" until then.
+void PicoWatch::showPowerMenu() {
+  guiState = APP_STATE;
+
+  uint8_t choice = 0; // 0 = Restart, 1 = Shutdown
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  bool cancelled = false;
+  bool confirmed = false;
+  while (!confirmed) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      confirmed = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      cancelled = true;
+      break;
+    }
+
+    blink = 1 - blink;
+
+    // Only two choices - Up/Down both just toggle, same pattern as
+    // showInternetAccessSettings().
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW || digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      choice = 1 - choice;
+    }
+
+    display.fillScreen(uiBgColor());
+    display.setFont(uiMenuFont());
+    display.setTextWrap(false); // heading only, clip don't wrap - see showInternetAccessSettings()'s comment
+    display.setTextColor(uiFgColor());
+    display.setCursor(10, 20);
+    display.println(PW_POWER_TITLE);
+
+    display.setTextColor(blink ? uiFgColor() : uiBgColor());
+    const char *name = choice == 1 ? PW_POWER_SHUTDOWN : PW_POWER_RESTART;
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(name, 10, 90, &x1, &y1, &w, &h); // X must match setCursor() below - see showFontSizeSettings()'s comment
+    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, uiFgColor());
+    display.setCursor(10, 90);
+    display.println(name);
+
+    display.display(true); // partial refresh
+  }
+
+  if (!confirmed || cancelled) {
+    showSettingsMenu(settingsMenuIndex, false);
+    return;
+  }
+
+  if (choice == 0) {
+    ESP.restart();
+    return; // unreachable, restart doesn't return - kept for clarity
+  }
+
+  display.fillScreen(uiBgColor());
+  display.setFont(uiMenuFont());
+  display.setTextColor(uiFgColor());
+  display.setCursor(10, 90);
+  display.println(uiWrapWords(PW_POWER_OFF_MSG, DISPLAY_WIDTH - 15));
+  display.display(false);
+  deepSleep(true);
 }
 
 void PicoWatch::showNotificationSettings() {
@@ -3332,9 +3424,13 @@ void PicoWatch::showFontSizeSettings() {
 
     // Preview the actual font/spacing this size will use, not the screen's
     // own fixed font - otherwise you can't tell what you're picking.
-    display.fillScreen(GxEPD_BLACK);
+    // Switched from hardcoded GxEPD_BLACK/WHITE to uiFgColor()/uiBgColor()
+    // (16.08.2026) - this is a direct Settings submenu, Jan asked for
+    // Invert Menu to actually apply throughout the Settings tree, not
+    // just its own on/off screen.
+    display.fillScreen(uiBgColor());
     display.setFont(&FreeMonoBold9pt7b);
-    display.setTextColor(GxEPD_WHITE);
+    display.setTextColor(uiFgColor());
     display.setCursor(10, 20);
     display.println(PW_FONT_SIZE_TITLE);
     display.setCursor(10, 40);
@@ -3343,7 +3439,7 @@ void PicoWatch::showFontSizeSettings() {
     display.setFont(size == UI_FONT_SIZE_SMALL     ? &FreeMonoBold9pt8b
                      : size == UI_FONT_SIZE_BIG    ? &FreeMonoBold15pt8b
                                                     : &FreeMonoBold12pt8b);
-    display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
+    display.setTextColor(blink ? uiFgColor() : uiBgColor());
     int16_t x1, y1;
     uint16_t w, h;
     const char *name = fontSizeName(size);
@@ -3356,7 +3452,7 @@ void PicoWatch::showFontSizeSettings() {
     // "the h in Bluetooth is only half marked", same bug in every
     // highlight-box picker screen, not just Internet Access).
     display.getTextBounds(name, 10, 90, &x1, &y1, &w, &h);
-    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, GxEPD_WHITE);
+    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, uiFgColor());
     display.setCursor(10, 90);
     display.println(name);
 
@@ -3422,14 +3518,7 @@ void PicoWatch::showInvertMenuSettings() {
     display.setCursor(10, 20);
     display.println(PW_SETTINGS_INVERT_MENU);
 
-    display.setTextColor(blink ? fg : bg);
-    int16_t x1, y1;
-    uint16_t w, h;
-    const char *name = inverted ? PW_YES : PW_NO;
-    display.getTextBounds(name, 10, 90, &x1, &y1, &w, &h); // X must match setCursor() below - see showFontSizeSettings()'s comment
-    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, fg);
-    display.setCursor(10, 90);
-    display.println(name);
+    uiDrawToggle(10, 78, inverted, true, blink, fg, bg);
 
     display.display(true); // partial refresh
   }
@@ -5158,6 +5247,7 @@ void PicoWatch::setupWifi() {
         body += "<form method='GET' action='/settings/invertmenu'><button>Invert Menu</button></form>";
         body += "<form method='GET' action='/settings/language'><button>Language</button></form>";
         body += "<form method='GET' action='/settings/debug'><button>Debug</button></form>";
+        body += "<form method='GET' action='/settings/power'><button>Power</button></form>";
         if (webFaceCount() > 0) {
           body += "<form method='GET' action='/settings/watchface'><button>Change Watchface</button></form>";
         }
@@ -5172,6 +5262,32 @@ void PicoWatch::setupWifi() {
         body += "<form method='GET' action='/settings/accelerometer'><button>Show Accelerometer</button></form>";
         body += "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
         server.send(200, "text/html", themedPage("Debug", body));
+      });
+
+      // Shutdown response is sent BEFORE actually sleeping (unlike Restart,
+      // where the connection dying along with the reboot is expected/fine)
+      // - the watch stays unreachable afterwards until a button wakes it,
+      // same practical effect as "off". See PicoWatch::showPowerMenu()'s
+      // comment on why this isn't a true power-off.
+      server.on("/settings/power", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        String body;
+        body += "<form method='POST' action='/settings/restart'><button>Restart</button></form>";
+        body += "<form method='POST' action='/settings/shutdown'><button>Shutdown</button></form>";
+        body += "<hr><a class='btnlink' href='/watch-settings'>Back</a>";
+        server.send(200, "text/html", themedPage("Power", body));
+      });
+      server.on("/settings/restart", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        server.send(200, "text/html", savedPage("Power", "/watch-settings", "Restarting..."));
+        delay(500);
+        ESP.restart();
+      });
+      server.on("/settings/shutdown", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        server.send(200, "text/html", savedPage("Power", "/watch-settings", "Shutting down - press any watch button to wake it up again."));
+        delay(500);
+        deepSleep(true);
       });
 
       server.on("/settings/time", HTTP_GET, [&]() {

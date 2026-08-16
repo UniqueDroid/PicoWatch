@@ -90,7 +90,10 @@ public:
 public:
   explicit PicoWatch(const picowatchSettings &s) : settings(s) {} // constructor
   void init(String datetime = "");
-  void deepSleep();
+  // indefinite=true skips the timer/USB/RTC wakeup sources entirely -
+  // only a button press wakes the watch back up (see showPowerMenu()'s
+  // "Shutdown"). Default false is the normal every-wake-cycle sleep.
+  void deepSleep(bool indefinite = false);
   float getBatteryVoltage();
   uint8_t getBoardRevision();
   void vibMotor(uint8_t intervalMs = 100, uint8_t length = 20);
@@ -134,6 +137,8 @@ public:
   // Global vibration strength picker (Settings -> "Vibration") - see
   // config.h's VIBRATION_STRENGTH_* and this function's own comment.
   void showVibrationSettings();
+  // Settings -> "Power" - Restart/Shutdown picker, see its own comment.
+  void showPowerMenu();
   void showAbout();
   void showBuzz();
   void showAccelerometer();

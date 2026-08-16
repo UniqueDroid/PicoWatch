@@ -199,6 +199,11 @@ const char *const kLocalizedStrings_fr[PW_STR_COUNT] = {
   "Faible",  // PW_STR_VIBRATION_STRENGTH_LOW
   "Moyenne",  // PW_STR_VIBRATION_STRENGTH_MEDIUM
   "Forte",  // PW_STR_VIBRATION_STRENGTH_HIGH
+  "Eteindre",  // PW_STR_SETTINGS_POWER
+  "Eteindre",  // PW_STR_POWER_TITLE
+  "Redemarrer",  // PW_STR_POWER_RESTART
+  "Eteindre",  // PW_STR_POWER_SHUTDOWN
+  "Eteint - appuyez sur un bouton",  // PW_STR_POWER_OFF_MSG
 };
 
 // 7-day steps history labels (separate from the table above since it's an
