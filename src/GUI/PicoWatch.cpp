@@ -3829,15 +3829,26 @@ void PicoWatch::updateFromGithub() {
   display.fillScreen(uiBgColor());
   display.setFont(uiMenuFont());
   display.setTextColor(uiFgColor());
+  // uiWrapWords() does the line-breaking instead of Adafruit_GFX's own
+  // character-count autowrap (which splits mid-word) - see
+  // _showNotificationDetail()'s comment for why. This screen uses
+  // uiMenuFont(), which scales with the user's Font Size setting
+  // (Settings -> Font Size), so a short-looking string like "Bad release
+  // data." can still overflow DISPLAY_WIDTH at the "Big" size - it did,
+  // clipped clean off the edge with no wrap at all since textWrap was
+  // left at whatever the previous screen last set it to (Jan's
+  // screenshot, 16.08.2026). Explicit setTextWrap(false) here removes
+  // that dependency on ambient state entirely.
+  display.setTextWrap(false);
   display.setCursor(0, 30);
-  display.println(PW_GITHUB_CHECKING);
+  display.println(uiWrapWords(PW_GITHUB_CHECKING, DISPLAY_WIDTH - 5));
   display.display(false);
 
   auto showResultAndReturn = [&](const char *line1, const char *line2 = nullptr) {
     display.fillScreen(uiBgColor());
     display.setCursor(0, 30);
-    display.println(line1);
-    if (line2) display.println(line2);
+    display.println(uiWrapWords(line1, DISPLAY_WIDTH - 5));
+    if (line2) display.println(uiWrapWords(line2, DISPLAY_WIDTH - 5));
     display.display(false);
     delay(2500);
     display.epd2.setBusyCallback(PicoWatchDisplay::busyCallback);
@@ -3884,9 +3895,9 @@ void PicoWatch::updateFromGithub() {
   if (!newer) {
     display.fillScreen(uiBgColor());
     display.setCursor(0, 30);
-    display.println(PW_GITHUB_ALREADY_LATEST_1);
-    display.println(PW_GITHUB_ALREADY_LATEST_2);
-    display.println(tag);
+    display.println(uiWrapWords(PW_GITHUB_ALREADY_LATEST_1, DISPLAY_WIDTH - 5));
+    display.println(uiWrapWords(PW_GITHUB_ALREADY_LATEST_2, DISPLAY_WIDTH - 5));
+    display.println(tag); // a git tag ("vX.Y.Z") is always short, no wrap needed
     display.display(false);
     delay(2500);
     display.epd2.setBusyCallback(PicoWatchDisplay::busyCallback);
@@ -3916,8 +3927,8 @@ void PicoWatch::updateFromGithub() {
 
   display.fillScreen(uiBgColor());
   display.setCursor(0, 30);
-  display.println(PW_GITHUB_DOWNLOADING);
-  display.println(tag);
+  display.println(uiWrapWords(PW_GITHUB_DOWNLOADING, DISPLAY_WIDTH - 5));
+  display.println(tag); // a git tag ("vX.Y.Z") is always short, no wrap needed
   display.println(" ");
   display.println("0%");
   display.display(false);
@@ -4007,8 +4018,8 @@ void PicoWatch::updateFromGithub() {
 
   display.fillScreen(uiBgColor());
   display.setCursor(0, 30);
-  display.println(PW_GITHUB_VERIFIED);
-  display.println(PW_GITHUB_REBOOTING);
+  display.println(uiWrapWords(PW_GITHUB_VERIFIED, DISPLAY_WIDTH - 5));
+  display.println(uiWrapWords(PW_GITHUB_REBOOTING, DISPLAY_WIDTH - 5));
   display.display(false);
   delay(1000);
   ESP.restart();

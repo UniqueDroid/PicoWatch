@@ -29,6 +29,13 @@ jobs:
         platform-url: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
         arduino-platform: esp32:esp32@2.0.17
         required-libraries: Adafruit GFX Library,Arduino_JSON,DS3232RTC,NTPClient,GxEPD2,NimBLE-Arduino
+        # Only AllFaces gets flashed in practice (see GITHUB_OTA_ASSET_NAME
+        # in config.h) - building/releasing all 8 example watchfaces per
+        # board revision bloated the release to ~96 assets, which made the
+        # on-device GitHub-API JSON response too big for Arduino_JSON to
+        # parse ("Bad release data.", Jan's screenshot 16.08.2026) and was
+        # exactly what Jan asked to stop doing earlier the same day.
+        sketch-names-find-start: examples/WatchFaces/AllFaces
         set-build-path: true
     - name: Rename binaries with board revision
       run: |
