@@ -12,12 +12,17 @@ jobs:
         board-revisions: [v10, v15, v20]
     steps:
     - uses: actions/checkout@master
+    - name: Install pinned Rtc_Pcf8563 (registry + git master are broken for ESP32, see README)
+      run: |
+        mkdir -p ~/Arduino/libraries
+        git clone --quiet https://github.com/orbitalair/Rtc_Pcf8563.git ~/Arduino/libraries/Rtc_Pcf8563
+        git -C ~/Arduino/libraries/Rtc_Pcf8563 checkout --quiet 7e2ece1e5b
     - uses: ArminJo/arduino-test-compile@v3
       with:
         arduino-board-fqbn: esp32:esp32:watchy:Revision=${{ matrix.board-revisions }},PartitionScheme=min_spiffs,UploadSpeed=921600,DebugLevel=none,EraseFlash=none
         platform-url: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
         arduino-platform: esp32:esp32@2.0.17
-        required-libraries: Adafruit GFX Library,Arduino_JSON,DS3232RTC,NTPClient,Rtc_Pcf8563,GxEPD2,WiFiManager,NimBLE-Arduino
+        required-libraries: Adafruit GFX Library,Arduino_JSON,DS3232RTC,NTPClient,GxEPD2,WiFiManager,NimBLE-Arduino
         set-build-path: true
     - name: Rename binaries with board revision
       run: |

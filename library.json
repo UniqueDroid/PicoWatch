@@ -26,7 +26,7 @@
     { "name": "NTPClient" },
     {
       "name": "Rtc_Pcf8563",
-      "version": "https://github.com/orbitalair/Rtc_Pcf8563.git#master"
+      "version": "https://github.com/orbitalair/Rtc_Pcf8563.git#7e2ece1e5b"
     },
     {
       "name": "GxEPD2",
