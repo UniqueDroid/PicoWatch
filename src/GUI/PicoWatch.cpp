@@ -79,6 +79,18 @@ RTC_DATA_ATTR bool notificationIconEnabled;
 // watchface), false = black (for light-background faces, where a white
 // icon is invisible - the exact problem Jan ran into, 15.08.2026).
 RTC_DATA_ATTR bool notificationIconLight;
+// Whether a new notification popup vibrates at all - separate from
+// notificationPopupEnabled above, which gates the popup+vibration
+// together; Jan wanted to be able to keep the popup but silence the buzz
+// specifically (16.08.2026).
+RTC_DATA_ATTR bool notificationVibrateEnabled;
+
+// Global vibration intensity (see config.h's VIBRATION_STRENGTH_* and
+// PicoWatch::showVibrationSettings()) - drives vibMotor()'s PWM duty
+// cycle. Deliberately global rather than per-feature: applies to the
+// o'clock vibrate window, the alarm, the notification popup, the reset
+// boot buzz, and the manual Buzz test alike.
+RTC_DATA_ATTR uint8_t vibrationStrength;
 
 // Gadgetbridge notification ring buffer (see PicoWatch::_checkBleNotifications()/
 // showNotifications()) - RTC_DATA_ATTR so it survives deep sleep without a
@@ -425,6 +437,7 @@ constexpr const char *kPrefsNotifyPopupEnabledKey = "notifPopOn";
 constexpr const char *kPrefsNotifyPopupDurationKey = "notifPopS";
 constexpr const char *kPrefsNotifyIconEnabledKey = "notifIconOn";
 constexpr const char *kPrefsNotifyIconLightKey = "notifIconLt";
+constexpr const char *kPrefsNotifyVibrateEnabledKey = "notifVibOn";
 
 void loadNotificationSettings() {
   Preferences prefs;
@@ -433,6 +446,7 @@ void loadNotificationSettings() {
   notificationPopupDurationS = prefs.getUChar(kPrefsNotifyPopupDurationKey, NOTIFICATION_POPUP_DURATION_DEFAULT_S);
   notificationIconEnabled    = prefs.getBool(kPrefsNotifyIconEnabledKey, true);
   notificationIconLight      = prefs.getBool(kPrefsNotifyIconLightKey, true);
+  notificationVibrateEnabled = prefs.getBool(kPrefsNotifyVibrateEnabledKey, true);
   prefs.end();
 }
 
@@ -443,7 +457,32 @@ void saveNotificationSettings() {
   prefs.putUChar(kPrefsNotifyPopupDurationKey, notificationPopupDurationS);
   prefs.putBool(kPrefsNotifyIconEnabledKey, notificationIconEnabled);
   prefs.putBool(kPrefsNotifyIconLightKey, notificationIconLight);
+  prefs.putBool(kPrefsNotifyVibrateEnabledKey, notificationVibrateEnabled);
   prefs.end();
+}
+
+constexpr const char *kPrefsVibrationStrengthKey = "vibStrength";
+
+void loadVibrationSettings() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, true);  // read-only
+  vibrationStrength = prefs.getUChar(kPrefsVibrationStrengthKey, VIBRATION_STRENGTH_HIGH);
+  prefs.end();
+}
+
+void saveVibrationSettings() {
+  Preferences prefs;
+  prefs.begin(kPrefsNamespace, false);  // read-write
+  prefs.putUChar(kPrefsVibrationStrengthKey, vibrationStrength);
+  prefs.end();
+}
+
+const char *vibrationStrengthName(uint8_t strength) {
+  switch (strength) {
+  case VIBRATION_STRENGTH_LOW: return PW_VIBRATION_STRENGTH_LOW;
+  case VIBRATION_STRENGTH_MEDIUM: return PW_VIBRATION_STRENGTH_MEDIUM;
+  default: return PW_VIBRATION_STRENGTH_HIGH;
+  }
 }
 
 constexpr const char *kPrefsLanguageKey = "uiLang";
@@ -499,6 +538,40 @@ const GFXfont *uiMenuFont() {
 // variables before it's committed, see their own comments.
 uint16_t uiBgColor() { return menuInverted ? GxEPD_WHITE : GxEPD_BLACK; }
 uint16_t uiFgColor() { return menuInverted ? GxEPD_BLACK : GxEPD_WHITE; }
+
+// Rounded on/off toggle switch, drawn instead of the old plain "Yes"/"No"
+// text for pure enabled/disabled settings fields - Jan wanted something
+// rounder/nicer to look at than text for a simple on/off (16.08.2026).
+// (x, y) is the pill's top-left corner. Colors are passed in explicitly
+// (rather than reading uiFgColor()/uiBgColor() internally) since not
+// every screen that has an on/off field honors Invert Menu yet - see
+// setAlarm()'s call site, which still hardcodes GxEPD_WHITE/BLACK like
+// the rest of that screen. Focus (the field currently selected,
+// mid-blink) is shown as a thin outline box around the whole toggle
+// rather than inverting its colors - inverting would make an "on"
+// toggle look identical to an "off" one while blinking.
+void uiDrawToggle(int16_t x, int16_t y, bool value, bool selected, bool blink, uint16_t fg, uint16_t bg) {
+  constexpr int16_t w = 34, h = 16, r = h / 2;
+
+  // display is a static PicoWatch member (see PicoWatch.h) - this is a
+  // free function like uiFgColor()/uiBgColor() above, so it needs the
+  // qualified name rather than the bare "display" a PicoWatch:: member
+  // function could use.
+  if (value) {
+    PicoWatch::display.fillRoundRect(x, y, w, h, r, fg);
+  } else {
+    PicoWatch::display.drawRoundRect(x, y, w, h, r, fg);
+  }
+
+  const int16_t knobR = r - 3;
+  const int16_t knobY = y + h / 2;
+  const int16_t knobX = value ? (x + w - r) : (x + r);
+  PicoWatch::display.fillCircle(knobX, knobY, knobR, value ? bg : fg);
+
+  if (selected && blink) {
+    PicoWatch::display.drawRoundRect(x - 3, y - 3, w + 6, h + 6, r, fg);
+  }
+}
 
 // Row spacing and highlight-box padding tuned per size - the generic
 // scroll/truncation machinery below (uiListVisibleRows() etc.) means rows
@@ -823,6 +896,7 @@ void PicoWatch::init(String datetime) {
     loadNotifyInterval();
     loadInternetAccessMode();
     loadNotificationSettings();
+    loadVibrationSettings();
     loadNotifications();
     loadLanguage();
     // _bmaConfig() above just soft-reset the sensor's own step counter to
@@ -1004,24 +1078,27 @@ void dispatchSettingsMenu(PicoWatch *w, int index) {
     w->showNotificationSettings();
     break;
   case 5:
-    w->setWeatherCity();
+    w->showVibrationSettings();
     break;
   case 6:
-    w->updateFromGithub();
+    w->setWeatherCity();
     break;
   case 7:
-    w->showButtonSettings();
+    w->updateFromGithub();
     break;
   case 8:
-    w->showFontSizeSettings();
+    w->showButtonSettings();
     break;
   case 9:
-    w->showInvertMenuSettings();
+    w->showFontSizeSettings();
     break;
   case 10:
-    w->showLanguageSettings();
+    w->showInvertMenuSettings();
     break;
   case 11:
+    w->showLanguageSettings();
+    break;
+  case 12:
     w->showDebugMenu(debugMenuIndex, false);
     break;
   default:
@@ -1380,10 +1457,11 @@ void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
   // NTP/Set Timezone got the same treatment earlier (see kTimeMenuItems).
   const char *const kItems[] = {PW_SETTINGS_ABOUT,           PW_SETTINGS_TIME,
                                  PW_SETTINGS_SETUP_WIFI,      PW_INTERNET_ACCESS_TITLE,
-                                 PW_NOTIF_SETTINGS_TITLE,     PW_SETTINGS_SET_CITY,
-                                 PW_SETTINGS_UPDATE_GITHUB,   PW_SETTINGS_BUTTON_SETTINGS,
-                                 PW_SETTINGS_FONT_SIZE,       PW_SETTINGS_INVERT_MENU,
-                                 PW_SETTINGS_LANGUAGE,        PW_SETTINGS_DEBUG};
+                                 PW_NOTIF_SETTINGS_TITLE,     PW_SETTINGS_VIBRATION,
+                                 PW_SETTINGS_SET_CITY,        PW_SETTINGS_UPDATE_GITHUB,
+                                 PW_SETTINGS_BUTTON_SETTINGS, PW_SETTINGS_FONT_SIZE,
+                                 PW_SETTINGS_INVERT_MENU,     PW_SETTINGS_LANGUAGE,
+                                 PW_SETTINGS_DEBUG};
   uiRenderList(kItems, SETTINGS_MENU_LENGTH, settingsMenuIndex, partialRefresh);
   guiState = SETTINGS_MENU_STATE;
   alreadyInMenu = false;
@@ -1392,10 +1470,11 @@ void PicoWatch::showSettingsMenu(byte settingsMenuIndex, bool partialRefresh) {
 void PicoWatch::showFastSettingsMenu(byte settingsMenuIndex) {
   const char *const kItems[] = {PW_SETTINGS_ABOUT,           PW_SETTINGS_TIME,
                                  PW_SETTINGS_SETUP_WIFI,      PW_INTERNET_ACCESS_TITLE,
-                                 PW_NOTIF_SETTINGS_TITLE,     PW_SETTINGS_SET_CITY,
-                                 PW_SETTINGS_UPDATE_GITHUB,   PW_SETTINGS_BUTTON_SETTINGS,
-                                 PW_SETTINGS_FONT_SIZE,       PW_SETTINGS_INVERT_MENU,
-                                 PW_SETTINGS_LANGUAGE,        PW_SETTINGS_DEBUG};
+                                 PW_NOTIF_SETTINGS_TITLE,     PW_SETTINGS_VIBRATION,
+                                 PW_SETTINGS_SET_CITY,        PW_SETTINGS_UPDATE_GITHUB,
+                                 PW_SETTINGS_BUTTON_SETTINGS, PW_SETTINGS_FONT_SIZE,
+                                 PW_SETTINGS_INVERT_MENU,     PW_SETTINGS_LANGUAGE,
+                                 PW_SETTINGS_DEBUG};
   uiRenderList(kItems, SETTINGS_MENU_LENGTH, settingsMenuIndex, true);
   guiState = SETTINGS_MENU_STATE;
 }
@@ -1543,10 +1622,7 @@ void PicoWatch::showVibrateWindowSettings() {
     display.setTextColor(uiFgColor());
     display.setCursor(5, 140);
     display.print(PW_ALARM_ENABLED_LABEL);
-    if (setIndex == SET_VIBWIN_ENABLED) {
-      display.setTextColor(blink ? uiFgColor() : uiBgColor());
-    }
-    display.println(enabled ? PW_YES : PW_NO);
+    uiDrawToggle(150, 128, enabled, setIndex == SET_VIBWIN_ENABLED, blink, uiFgColor(), uiBgColor());
 
     display.display(true); // partial refresh
   }
@@ -1559,6 +1635,85 @@ void PicoWatch::showVibrateWindowSettings() {
   showTimeMenu(timeMenuIndex, false);
 }
 
+// Global vibration strength picker (Settings -> "Vibration") - 3-value
+// cycle, same shape as showFontSizeSettings()/showInternetAccessSettings()
+// (fillRect highlight around the chosen name, Up/Down cycle in opposite
+// directions like FontSize's 3-way pick, uiFgColor()/uiBgColor() theming
+// like InternetAccess since this is a new screen, not one of the older
+// hardcoded-black/white ones). Confirming previews the newly chosen
+// strength with an actual buzz, so Jan can feel what he just picked
+// instead of guessing (16.08.2026).
+void PicoWatch::showVibrationSettings() {
+  guiState = APP_STATE;
+
+  uint8_t strength = vibrationStrength;
+  int8_t blink = 0;
+
+  pinMode(DOWN_BTN_PIN, INPUT);
+  pinMode(UP_BTN_PIN, INPUT);
+  pinMode(MENU_BTN_PIN, INPUT);
+  pinMode(BACK_BTN_PIN, INPUT);
+
+  while (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+    delay(10);
+  }
+
+  display.setFullWindow();
+
+  bool cancelled = false;
+  bool confirmed = false;
+  while (!confirmed) {
+    if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
+      confirmed = true;
+      break;
+    }
+    if (digitalRead(BACK_BTN_PIN) == ACTIVE_LOW) {
+      cancelled = true;
+      break;
+    }
+
+    blink = 1 - blink;
+
+    if (digitalRead(DOWN_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      strength = (strength + 1) % 3;
+    }
+    if (digitalRead(UP_BTN_PIN) == ACTIVE_LOW) {
+      blink = 1;
+      strength = (strength + 2) % 3;
+    }
+
+    display.fillScreen(uiBgColor());
+    display.setFont(uiMenuFont());
+    display.setTextWrap(false); // heading only, clip don't wrap - see showInternetAccessSettings()'s comment
+    display.setTextColor(uiFgColor());
+    display.setCursor(10, 20);
+    display.println(PW_VIBRATION_TITLE);
+
+    display.setCursor(10, 55);
+    display.println(PW_VIBRATION_STRENGTH_LABEL);
+
+    display.setTextColor(blink ? uiFgColor() : uiBgColor());
+    const char *name = vibrationStrengthName(strength);
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(name, 10, 90, &x1, &y1, &w, &h); // X must match setCursor() below - see showFontSizeSettings()'s comment
+    display.fillRect(x1 - 4, y1 - 6, w + 8, h + 12, uiFgColor());
+    display.setCursor(10, 90);
+    display.println(name);
+
+    display.display(true); // partial refresh
+  }
+
+  if (confirmed && !cancelled) {
+    vibrationStrength = strength;
+    saveVibrationSettings();
+    vibMotor(); // preview the newly chosen strength
+  }
+
+  showSettingsMenu(settingsMenuIndex, false);
+}
+
 void PicoWatch::showNotificationSettings() {
   guiState = APP_STATE;
 
@@ -1566,6 +1721,7 @@ void PicoWatch::showNotificationSettings() {
   uint8_t popupDuration  = notificationPopupDurationS;
   bool iconEnabled       = notificationIconEnabled;
   bool iconLight         = notificationIconLight;
+  bool vibrateEnabled    = notificationVibrateEnabled;
 
   int8_t setIndex = SET_NOTIF_POPUP_ENABLED;
   int8_t blink = 0;
@@ -1586,7 +1742,7 @@ void PicoWatch::showNotificationSettings() {
   while (1) {
     if (digitalRead(MENU_BTN_PIN) == ACTIVE_LOW) {
       setIndex++;
-      if (setIndex > SET_NOTIF_ICON_LIGHT) {
+      if (setIndex > SET_NOTIF_VIBRATE_ENABLED) {
         break;
       }
     }
@@ -1615,6 +1771,9 @@ void PicoWatch::showNotificationSettings() {
       case SET_NOTIF_ICON_LIGHT:
         iconLight = !iconLight;
         break;
+      case SET_NOTIF_VIBRATE_ENABLED:
+        vibrateEnabled = !vibrateEnabled;
+        break;
       default:
         break;
       }
@@ -1636,6 +1795,9 @@ void PicoWatch::showNotificationSettings() {
       case SET_NOTIF_ICON_LIGHT:
         iconLight = !iconLight;
         break;
+      case SET_NOTIF_VIBRATE_ENABLED:
+        vibrateEnabled = !vibrateEnabled;
+        break;
       default:
         break;
       }
@@ -1649,10 +1811,7 @@ void PicoWatch::showNotificationSettings() {
 
     display.setCursor(5, 55);
     display.print(PW_NOTIF_SETTINGS_POPUP_LABEL);
-    if (setIndex == SET_NOTIF_POPUP_ENABLED) {
-      display.setTextColor(blink ? uiFgColor() : uiBgColor());
-    }
-    display.println(popupEnabled ? PW_YES : PW_NO);
+    uiDrawToggle(150, 43, popupEnabled, setIndex == SET_NOTIF_POPUP_ENABLED, blink, uiFgColor(), uiBgColor());
 
     display.setTextColor(uiFgColor());
     display.setCursor(5, 85);
@@ -1666,10 +1825,7 @@ void PicoWatch::showNotificationSettings() {
     display.setTextColor(uiFgColor());
     display.setCursor(5, 115);
     display.print(PW_NOTIF_SETTINGS_ICON_LABEL);
-    if (setIndex == SET_NOTIF_ICON_ENABLED) {
-      display.setTextColor(blink ? uiFgColor() : uiBgColor());
-    }
-    display.println(iconEnabled ? PW_YES : PW_NO);
+    uiDrawToggle(150, 103, iconEnabled, setIndex == SET_NOTIF_ICON_ENABLED, blink, uiFgColor(), uiBgColor());
 
     display.setTextColor(uiFgColor());
     display.setCursor(5, 145);
@@ -1679,6 +1835,11 @@ void PicoWatch::showNotificationSettings() {
     }
     display.println(iconLight ? PW_NOTIF_SETTINGS_ICON_LIGHT : PW_NOTIF_SETTINGS_ICON_DARK);
 
+    display.setTextColor(uiFgColor());
+    display.setCursor(5, 175);
+    display.print(PW_NOTIF_SETTINGS_VIBRATE_LABEL);
+    uiDrawToggle(150, 163, vibrateEnabled, setIndex == SET_NOTIF_VIBRATE_ENABLED, blink, uiFgColor(), uiBgColor());
+
     display.display(true); // partial refresh
   }
 
@@ -1686,6 +1847,7 @@ void PicoWatch::showNotificationSettings() {
   notificationPopupDurationS = popupDuration;
   notificationIconEnabled    = iconEnabled;
   notificationIconLight      = iconLight;
+  notificationVibrateEnabled = vibrateEnabled;
   saveNotificationSettings();
 
   showSettingsMenu(settingsMenuIndex, false);
@@ -2629,7 +2791,9 @@ void PicoWatch::_showNotificationPopup() {
   }
   const PwNotification &n = notifications[0];
 
-  vibMotor(100, 6);
+  if (notificationVibrateEnabled) {
+    vibMotor(100, 6);
+  }
 
   display.setFullWindow();
   display.fillScreen(GxEPD_BLACK);
@@ -3004,10 +3168,7 @@ void PicoWatch::setAlarm() {
     display.setTextColor(GxEPD_WHITE);
     display.setCursor(5, 140);
     display.print(PW_ALARM_ENABLED_LABEL);
-    if (setIndex == SET_ALARM_ENABLED) {
-      display.setTextColor(blink ? GxEPD_WHITE : GxEPD_BLACK);
-    }
-    display.println(enabled ? PW_YES : PW_NO);
+    uiDrawToggle(150, 128, enabled, setIndex == SET_ALARM_ENABLED, blink, GxEPD_WHITE, GxEPD_BLACK);
 
     display.display(true); // partial refresh
   }
@@ -3865,14 +4026,34 @@ void PicoWatch::showBuzz() {
   showDebugMenu(debugMenuIndex, false);
 }
 
+// Switched from a plain digitalWrite() on/off pulse to LEDC PWM (16.08.2026)
+// so vibrationStrength (see config.h's VIBRATION_STRENGTH_* and
+// PicoWatch::showVibrationSettings()) can actually control how hard the
+// motor buzzes, not just whether it does - a vibration motor's felt
+// intensity scales with drive voltage/duty, which digitalWrite() can't
+// vary. ledcSetup()/ledcAttachPin() (arduino-esp32 2.0.17's channel-based
+// LEDC API - NOT the pin-based ledcAttach() from core 3.x, see project
+// memory on why this repo is pinned to 2.0.17) are cheap enough to redo on
+// every call rather than needing an "already attached" flag, given
+// vibrations only fire a handful of times per minute at most.
 void PicoWatch::vibMotor(uint8_t intervalMs, uint8_t length) {
-  pinMode(VIB_MOTOR_PIN, OUTPUT);
+  ledcSetup(VIB_MOTOR_PWM_CHANNEL, VIB_MOTOR_PWM_FREQ, VIB_MOTOR_PWM_RESOLUTION_BITS);
+  ledcAttachPin(VIB_MOTOR_PIN, VIB_MOTOR_PWM_CHANNEL);
+
+  uint8_t duty;
+  switch (vibrationStrength) {
+  case VIBRATION_STRENGTH_LOW:    duty = VIB_MOTOR_DUTY_LOW;    break;
+  case VIBRATION_STRENGTH_MEDIUM: duty = VIB_MOTOR_DUTY_MEDIUM; break;
+  default:                        duty = VIB_MOTOR_DUTY_HIGH;   break; // VIBRATION_STRENGTH_HIGH
+  }
+
   bool motorOn = false;
   for (int i = 0; i < length; i++) {
     motorOn = !motorOn;
-    digitalWrite(VIB_MOTOR_PIN, motorOn);
+    ledcWrite(VIB_MOTOR_PWM_CHANNEL, motorOn ? duty : 0);
     delay(intervalMs);
   }
+  ledcWrite(VIB_MOTOR_PWM_CHANNEL, 0); // always end off, even if a future caller passes an odd length
 }
 
 void PicoWatch::setTime() {
@@ -4959,6 +5140,7 @@ void PicoWatch::setupWifi() {
         body += "<form method='GET' action='/settings/internet-access'><button>Internet Access</button></form>";
         body += "<form method='GET' action='/settings/hostname'><button>WiFi Hostname</button></form>";
         body += "<form method='GET' action='/settings/notifications'><button>Notification Settings</button></form>";
+        body += "<form method='GET' action='/settings/vibration'><button>Vibration</button></form>";
         body += "<form method='GET' action='/settings/city'><button>Weather City</button></form>";
         body += "<form method='GET' action='/settings/buttons'><button>Button Settings</button></form>";
         body += "<form method='GET' action='/settings/fontsize'><button>Font Size</button></form>";
@@ -5255,13 +5437,14 @@ void PicoWatch::setupWifi() {
 
       server.on("/settings/notifications", HTTP_GET, [&]() {
         if (!wifiManager.handleRequest()) return;
-        char buf[640];
+        char buf[768];
         snprintf(buf, sizeof(buf),
                  "<form method='POST' action='/settings/notifications'>"
                  "<label><input type='checkbox' name='popup' value='1'%s> Show popup</label><br>"
                  "Popup duration (%d-%ds)<br><input type='number' name='dur' min='%d' max='%d' step='%d' value='%d'><br>"
                  "<label><input type='checkbox' name='icon' value='1'%s> Show watchface icon</label><br>"
                  "<label><input type='checkbox' name='light' value='1'%s> Icon color: light (unchecked = dark)</label><br>"
+                 "<label><input type='checkbox' name='vibrate' value='1'%s> Vibrate on new notification</label><br>"
                  "<button type='submit'>Save</button></form>"
                  "<hr><a class='btnlink' href='/watch-settings'>Back</a>",
                  notificationPopupEnabled ? " checked" : "",
@@ -5269,7 +5452,8 @@ void PicoWatch::setupWifi() {
                  NOTIFICATION_POPUP_DURATION_MIN_S, NOTIFICATION_POPUP_DURATION_MAX_S,
                  NOTIFICATION_POPUP_DURATION_STEP_S, notificationPopupDurationS,
                  notificationIconEnabled ? " checked" : "",
-                 notificationIconLight ? " checked" : "");
+                 notificationIconLight ? " checked" : "",
+                 notificationVibrateEnabled ? " checked" : "");
         server.send(200, "text/html", themedPage("Notification Settings", buf));
       });
       server.on("/settings/notifications", HTTP_POST, [&]() {
@@ -5280,8 +5464,33 @@ void PicoWatch::setupWifi() {
                                                 NOTIFICATION_POPUP_DURATION_MAX_S);
         notificationIconEnabled = server.hasArg("icon");
         notificationIconLight = server.hasArg("light");
+        notificationVibrateEnabled = server.hasArg("vibrate");
         saveNotificationSettings();
         server.send(200, "text/html", savedPage("Notification Settings", "/watch-settings"));
+      });
+
+      server.on("/settings/vibration", HTTP_GET, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        char buf[640];
+        snprintf(buf, sizeof(buf),
+                 "<form method='POST' action='/settings/vibration'>"
+                 "Strength (applies to all vibrations - o'clock, alarm, notifications):<br>"
+                 "<label><input type='radio' name='strength' value='0'%s> Low</label><br>"
+                 "<label><input type='radio' name='strength' value='1'%s> Medium</label><br>"
+                 "<label><input type='radio' name='strength' value='2'%s> High</label><br>"
+                 "<button type='submit'>Save</button></form>"
+                 "<form method='POST' action='/settings/buzz'><button>Test Buzz</button></form>"
+                 "<hr><a class='btnlink' href='/watch-settings'>Back</a>",
+                 vibrationStrength == VIBRATION_STRENGTH_LOW ? " checked" : "",
+                 vibrationStrength == VIBRATION_STRENGTH_MEDIUM ? " checked" : "",
+                 vibrationStrength == VIBRATION_STRENGTH_HIGH ? " checked" : "");
+        server.send(200, "text/html", themedPage("Vibration", buf));
+      });
+      server.on("/settings/vibration", HTTP_POST, [&]() {
+        if (!wifiManager.handleRequest()) return;
+        vibrationStrength = constrain(server.arg("strength").toInt(), 0, 2);
+        saveVibrationSettings();
+        server.send(200, "text/html", savedPage("Vibration", "/watch-settings"));
       });
 
       server.on("/settings/language", HTTP_GET, [&]() {

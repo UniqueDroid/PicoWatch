@@ -131,6 +131,9 @@ public:
   // feature (see PicoWatch::init()'s WATCHFACE_STATE tick handler),
   // persisted in flash (NVS). Same 3-field picker pattern as setAlarm().
   void showVibrateWindowSettings();
+  // Global vibration strength picker (Settings -> "Vibration") - see
+  // config.h's VIBRATION_STRENGTH_* and this function's own comment.
+  void showVibrationSettings();
   void showAbout();
   void showBuzz();
   void showAccelerometer();

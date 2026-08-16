@@ -88,6 +88,19 @@
 
 #endif
 
+// Vibration motor PWM (PicoWatch::vibMotor(), see config.h's
+// VIBRATION_STRENGTH_* and PicoWatch::showVibrationSettings()) - channel
+// is arbitrary (0), nothing else in this codebase uses LEDC. 8-bit
+// resolution (0-255 duty) is plenty for 3 discrete strength levels;
+// 5kHz is a typical ERM vibration-motor PWM frequency, well above
+// audible/felt-buzz range from the PWM signal itself.
+#define VIB_MOTOR_PWM_CHANNEL 0
+#define VIB_MOTOR_PWM_FREQ 5000
+#define VIB_MOTOR_PWM_RESOLUTION_BITS 8
+#define VIB_MOTOR_DUTY_LOW    90
+#define VIB_MOTOR_DUTY_MEDIUM 170
+#define VIB_MOTOR_DUTY_HIGH   255
+
 //display
 #define DISPLAY_WIDTH 200
 #define DISPLAY_HEIGHT 200
@@ -160,7 +173,7 @@
 #define DEBUG_MENU_STATE    6
 #define MENU_HEIGHT     25
 #define MENU_LENGTH     8           // top-level: Change Watchface, Stopwatch, Steps, Alarm, Weather, Notifications, Games, Settings
-#define SETTINGS_MENU_LENGTH 12     // About, Time, WiFi, Internet Access, Notification Settings, Set City, Online Update, Button Settings, Font Size, Invert Menu, Language, Debug
+#define SETTINGS_MENU_LENGTH 13     // About, Time, WiFi, Internet Access, Notification Settings, Vibration, Set City, Online Update, Button Settings, Font Size, Invert Menu, Language, Debug
 #define GAMES_MENU_LENGTH 4         // Snake, Pong, Tetris, Flappy
 #define TIME_MENU_LENGTH 5          // Set Time, Sync NTP, Set Timezone, Vibrate Window, Notify Interval
 #define DEBUG_MENU_LENGTH 2         // Vibrate Motor, Show Accelerometer
@@ -202,6 +215,17 @@
 #define SET_NOTIF_POPUP_DURATION 1
 #define SET_NOTIF_ICON_ENABLED   2
 #define SET_NOTIF_ICON_LIGHT     3
+#define SET_NOTIF_VIBRATE_ENABLED 4
+// global vibration strength (PicoWatch::showVibrationSettings()) - drives
+// vibMotor()'s PWM duty cycle, see its definition for the actual duty
+// values per level. Applies to every vibration in the app (o'clock window,
+// alarm, notification popup, reset boot buzz, manual Buzz test), not just
+// notifications - Jan wanted one global "how hard does it buzz" setting
+// (16.08.2026).
+#define SET_VIBRATION_STRENGTH 0
+#define VIBRATION_STRENGTH_LOW    0
+#define VIBRATION_STRENGTH_MEDIUM 1
+#define VIBRATION_STRENGTH_HIGH   2
 // set time
 #define SET_HOUR   0
 #define SET_MINUTE 1
@@ -289,8 +313,8 @@
 // (_getWeatherData()) unless the user set one manually (setTimezone()).
 #define BLE_TIME_API_URL "http://worldtimeapi.org/api/ip"
 #define SOFTWARE_VERSION_MAJOR 1
-#define SOFTWARE_VERSION_MINOR 1
-#define SOFTWARE_VERSION_PATCH 5
+#define SOFTWARE_VERSION_MINOR 2
+#define SOFTWARE_VERSION_PATCH 0
 #define HARDWARE_VERSION_MAJOR 1
 #define HARDWARE_VERSION_MINOR 0
 

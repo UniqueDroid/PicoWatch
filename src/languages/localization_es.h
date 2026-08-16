@@ -189,6 +189,13 @@ const char *const kLocalizedStrings_es[PW_STR_COUNT] = {
   "Color Icono: ",  // PW_STR_NOTIF_SETTINGS_ICON_COLOR_LABEL
   "Claro",  // PW_STR_NOTIF_SETTINGS_ICON_LIGHT
   "Oscuro",  // PW_STR_NOTIF_SETTINGS_ICON_DARK
+  "Vibrar: ",  // PW_STR_NOTIF_SETTINGS_VIBRATE_LABEL
+  "Vibracion",  // PW_STR_SETTINGS_VIBRATION
+  "Vibracion",  // PW_STR_VIBRATION_TITLE
+  "Intensidad: ",  // PW_STR_VIBRATION_STRENGTH_LABEL
+  "Baja",  // PW_STR_VIBRATION_STRENGTH_LOW
+  "Media",  // PW_STR_VIBRATION_STRENGTH_MEDIUM
+  "Alta",  // PW_STR_VIBRATION_STRENGTH_HIGH
 };
 
 // 7-day steps history labels (separate from the table above since it's an

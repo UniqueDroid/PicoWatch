@@ -61,7 +61,9 @@ game over.
   route weather lookups and time sync through the paired phone's own connection instead
   (does not carry OTA — that still needs WiFi)
 - **Notification Settings** — popup on/off, popup duration (5–30 s), watchface icon
-  on/off, icon color (for light or dark watchfaces)
+  on/off, icon color (for light or dark watchfaces), vibrate on/off
+- **Vibration** — global strength (Low/Medium/High, PWM-driven) for every vibration in
+  the app: o'clock window, alarm, notifications, reset boot buzz, manual Buzz test
 - **Set City** — 7-digit OpenWeatherMap city ID picker
 - **Online Update** — check GitHub releases and flash the latest one over WiFi
   (SHA-256 verified against the release asset before installing)
@@ -93,7 +95,7 @@ menu at its IP address:
 - **Change Password**
 - **Config Erase** — wipe all saved settings and WiFi credentials, then reboot
 - **Watch Settings** — the same Settings tree from the on-device menu (Time, Internet
-  Access, Notification Settings, Weather City, Button Settings, Font Size, Invert Menu,
+  Access, Notification Settings, Vibration, Weather City, Button Settings, Font Size, Invert Menu,
   Language, Hostname, …), mirrored so it can be changed from a phone/PC without touching
   the watch's 4 buttons
 - Stock WiFiManager pages (Configure WiFi, Info, Restart) alongside the above — the Info
