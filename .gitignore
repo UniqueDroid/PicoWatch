@@ -77,3 +77,4 @@ examples/*/*/build/
 build_allfaces_v2/
 build_allfaces_v3/
 build_basic_v3/
+error/
