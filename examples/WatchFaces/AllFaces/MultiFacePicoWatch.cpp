@@ -236,15 +236,11 @@ void MultiFacePicoWatch::draw7Seg() {
 
 void MultiFacePicoWatch::draw7SegTime() {
   display.setFont(&DSEG7_Classic_Bold_53);
-  // Baseline nudged from 53+5 to 53+17 (16.08.2026, Jan's screenshot) -
-  // the notification envelope icon (_drawNotificationIndicator(), fixed
-  // at y=3..16, horizontally centered like the clock's colon) overlapped
-  // the top of the digits/colon at the old baseline. The icon is already
-  // pinned essentially at the top edge of the display, nowhere left to
-  // move it further up, so the clock moves down instead - 12px, just
-  // enough clearance without eating too far into the gap above the
-  // weekday/month row drawn by draw7SegDate() right below it.
-  display.setCursor(5, 53 + 17);
+  // Reverted 16.08.2026 - a baseline nudge (53+17) was tried here to make
+  // room for the notification icon, but that wasn't the fix Jan wanted;
+  // reverted back to the original position on his request. Leave the
+  // envelope icon overlap alone until it's actually discussed with him.
+  display.setCursor(5, 53 + 5);
   int displayHour;
   if (HOUR_12_24 == 12) {
     displayHour = ((currentTime.Hour + 11) % 12) + 1;
